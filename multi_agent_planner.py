@@ -1,18 +1,16 @@
 import heapq
 
 
-def heuristic(a, b):
-    return abs(a[0] - b[0]) + abs(a[1] - b[1])
+def heuristic(graph, a, b):
+    x1, y1 = graph.get_position(a)
+    x2, y2 = graph.get_position(b)
+    return abs(x1 - x2) + abs(y1 - y2)
 
 
-def space_time_a_star(
-    environment,
-    start,
-    goal,
-    reservation_table,
-    start_time=0,
-    max_time=200
-):
+def space_time_a_star(graph, start, goal,
+                      reservation_table,
+                      start_time=0,
+                      max_time=500):
 
     open_set = []
     heapq.heappush(open_set, (0, start, start_time))
@@ -28,15 +26,15 @@ def space_time_a_star(
             state = (current, t)
 
             while state in came_from:
-                pos, time = state
-                path.append(pos)
+                node, time = state
+                path.append(node)
                 state = came_from[state]
 
             path.append(start)
             path.reverse()
             return path
 
-        neighbors = environment.get_neighbors(*current) + [current]  # allow wait
+        neighbors = graph.get_neighbors(current) + [current]
 
         for neighbor in neighbors:
             next_t = t + 1
@@ -52,7 +50,7 @@ def space_time_a_star(
 
             if state not in g_score or tentative_g < g_score[state]:
                 g_score[state] = tentative_g
-                f = tentative_g + heuristic(neighbor, goal)
+                f = tentative_g + heuristic(graph, neighbor, goal)
                 came_from[state] = (current, t)
                 heapq.heappush(open_set, (f, neighbor, next_t))
 

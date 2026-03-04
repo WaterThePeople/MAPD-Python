@@ -7,48 +7,75 @@ class Visualizer:
         self.sim = simulation
         self.fig, self.ax = plt.subplots()
 
-        self.colors = ["blue", "orange", "purple", "cyan", "magenta"]
-
     def draw(self):
         self.ax.clear()
+        graph = self.sim.graph
 
-        grid = self.sim.environment.grid
-        self.ax.imshow(grid, cmap="Greys", origin="lower")
+        for node_id, (x, y) in graph.nodes.items():
+            self.ax.scatter(x, y, color="lightgray", s=10)
 
-        for i, task in enumerate(self.sim.tasks):
-            color = self.colors[i % len(self.colors)]
+        import matplotlib.cm as cm
+        colors = cm.tab10.colors
+
+        for agent in self.sim.agents:
+
+            if agent.task is None:
+                continue
+
+            task = agent.task
+            color = colors[agent.id % 10]
+
+            if not task.delivered:
+                x, y = graph.get_position(task.delivery)
+                self.ax.scatter(
+                    x, y,
+                    marker="s",
+                    s=200,
+                    edgecolors=color,
+                    facecolors="none",
+                    linewidths=2
+                )
 
             if not task.picked_up:
-                px, py = task.pickup
-                self.ax.scatter(px, py, color=color, s=120, marker="s")
-            if not task.delivered:
-                dx, dy = task.delivery
-                self.ax.scatter(dx, dy, color=color, s=120, marker="x")
+                x, y = graph.get_position(task.pickup)
+                self.ax.scatter(
+                    x, y,
+                    marker="x",
+                    s=200,
+                    color=color,
+                    linewidths=2
+                )
 
-        for i, agent in enumerate(self.sim.agents):
-            x, y = agent.position
-            self.ax.scatter(x, y, color=self.colors[i % len(self.colors)], s=200)
+        for agent in self.sim.agents:
+            x, y = graph.get_position(agent.node)
+            color = colors[agent.id % 10]
+
+            self.ax.scatter(
+                x, y,
+                s=250,
+                color=color
+            )
 
         self.ax.set_title(f"Time: {self.sim.time}")
         self.ax.set_xticks([])
         self.ax.set_yticks([])
 
-    def save_gif(self, filename="simulation.gif", fps=2):
+    def frame_generator(self):
+        while not self.sim.all_finished():
+            self.sim.step()
+            yield self.sim.time
 
-        def update(frame):
-            if not self.sim.all_finished():
-                self.sim.step()
-                self.draw()
+    def save_gif(self, filename="simulation.gif", fps=2):
 
         ani = animation.FuncAnimation(
             self.fig,
-            update,
-            frames=200,
-            interval=500,
-            repeat=False
+            lambda frame: self.draw(),
+            frames=self.frame_generator(),
+            repeat=False,
+            cache_frame_data=False
         )
 
         writer = animation.PillowWriter(fps=fps)
         ani.save(filename, writer=writer)
 
-        print(f"Zapisano GIF:", filename)
+        print("Zapisano GIF:", filename)
