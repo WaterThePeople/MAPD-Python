@@ -11,17 +11,10 @@ def main():
 
     print("=== START SYMULACJI MAPD ===")
 
-    graph = WarehouseGraph()
-    graph.generate_grid_graph(30, 30)
-
-    print("Graf wygenerowany.")
-    print("Liczba węzłów:", len(graph.nodes))
+    graph = WarehouseGraph(25, 17)
+    graph.generate_rmfs_layout()
 
     num_agents, tasks = load_instance("maps/AC0010.txt")
-
-    print("Wczytano instancję.")
-    print("Liczba agentów:", num_agents)
-    print("Liczba zadań:", len(tasks))
 
     agents = [
         Agent(start_node=i + 1, agent_id=i)
@@ -30,14 +23,15 @@ def main():
 
     reservation_table = ReservationTable()
 
+    for agent in agents:
+        reservation_table.reserve_start(agent.node)
+
     print("\n=== PLANOWANIE ŚCIEŻEK ===")
 
     for agent, task in zip(agents, tasks[:num_agents]):
 
-        print(f"\nAgent {agent.id}:")
-        print(f"  Start: {agent.node}")
-        print(f"  Pickup: {task.pickup}")
-        print(f"  Delivery: {task.delivery}")
+        print(f"\nAgent {agent.id}")
+        print(f"start {agent.node} -> pickup {task.pickup} -> delivery {task.delivery}")
 
         path1 = space_time_a_star(
             graph,
@@ -47,42 +41,39 @@ def main():
         )
 
         if not path1:
-            print("Nie znaleziono ścieżki do pickup!")
+            print("Brak ścieżki do pickup")
             continue
-
-        reservation_table.reserve(path1)
 
         path2 = space_time_a_star(
             graph,
             task.pickup,
             task.delivery,
             reservation_table,
-            start_time=len(path1)
+            start_time=len(path1) - 1
         )
 
         if not path2:
-            print("Nie znaleziono ścieżki do delivery!")
+            print("Brak ścieżki do delivery")
             continue
 
-        reservation_table.reserve(path2, start_time=len(path1))
+        path2 = path2[1:]
 
-        agent.path = path1 + path2
+        full_path = path1 + path2
+
+        reservation_table.reserve(full_path)
+
+        agent.path = full_path
         agent.task = task
 
-        print(f"Ścieżka zaplanowana.")
-        print(f"Długość do pickup: {len(path1)}")
-        print(f"Długość do delivery: {len(path2)}")
-        print(f"Łączna długość: {len(agent.path)}")
+        print("Długość ścieżki:", len(full_path))
 
-        if path2[-1] != task.delivery:
-            path2.append(task.delivery)
-        agent.path = path1 + path2
-
-    print("\n=== START SYMULACJI RUCHU ===")
+    print("\n=== START SYMULACJI ===")
 
     sim = Simulation(graph, agents, tasks)
+
     vis = Visualizer(sim)
-    vis.save_gif("AC0010_simulation.gif", fps=3)
+
+    vis.save_gif("simulation.gif", fps=3)
 
 
 if __name__ == "__main__":
