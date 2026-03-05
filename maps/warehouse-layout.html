@@ -51,7 +51,7 @@
 
   .grid {
     display: grid;
-    grid-template-columns: repeat(48, 1fr);
+    grid-template-columns: repeat(30, 1fr);
     gap: 2px;
   }
 
@@ -135,7 +135,7 @@
 <body>
 
 <h1>Warehouse Floor Plan</h1>
-<p class="subtitle">48 × 16 grid &nbsp;·&nbsp; 768 cells</p>
+<p class="subtitle">30 × 14 grid &nbsp;·&nbsp; 420 cells</p>
 
 <div class="grid-wrapper">
   <div class="grid" id="grid"></div>
@@ -148,24 +148,22 @@
 </div>
 
 <script>
-const COLS = 48;
+const COLS = 30;
 const layout = [
-  "EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE",
-  "ESSE##########E##########E##########E##########E",
-  "ESSE##########E##########E##########E##########E",
-  "ESSEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE",
-  "ESSE##########E##########E##########E##########E",
-  "ESSE##########E##########E##########E##########E",
-  "ESSEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE",
-  "ESSE##########E##########E##########E##########E",
-  "ESSE##########E##########E##########E##########E",
-  "ESSEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE",
-  "ESSE##########E##########E##########E##########E",
-  "ESSE##########E##########E##########E##########E",
-  "ESSEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE",
-  "ESSE##########E##########E##########E##########E",
-  "ESSE##########E##########E##########E##########E",
-  "EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE",
+  "EEEEEEEEEEEEEEEEEEEEEEEEEEEEEE",
+  "EEEEEEEEEEEEEEEEEEEEEEEEEEEEEE",
+  "EESSEE##########EE##########EE",
+  "EESSEE##########EE##########EE",
+  "EESSEEEEEEEEEEEEEEEEEEEEEEEEEE",
+  "EESSEEEEEEEEEEEEEEEEEEEEEEEEEE",
+  "EESSEE##########EE##########EE",
+  "EESSEE##########EE##########EE",
+  "EESSEEEEEEEEEEEEEEEEEEEEEEEEEE",
+  "EESSEEEEEEEEEEEEEEEEEEEEEEEEEE",
+  "EESSEE##########EE##########EE",
+  "EESSEE##########EE##########EE",
+  "EEEEEEEEEEEEEEEEEEEEEEEEEEEEEE",
+  "EEEEEEEEEEEEEEEEEEEEEEEEEEEEEE",
 ];
 
 const grid = document.getElementById('grid');

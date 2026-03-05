@@ -1,79 +1,61 @@
-from warehouse_graph import WarehouseGraph
-from agent import Agent
-from reservation_table import ReservationTable
-from multi_agent_planner import space_time_a_star
-from simulation import Simulation
-from benchmark_loader import load_instance
-from visualization import Visualizer
+from __future__ import annotations
+
+import argparse
+from pathlib import Path
+
+from mapd.loader import load_layout, load_scenario
+from mapd.planner import build_agent_plans
+from mapd.renderer import render_frames
 
 
-def main():
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Proof-of-concept MAPD simulator with GIF export.")
+    parser.add_argument("--layout", default="maps/layout.txt", help="Path to the warehouse layout file.")
+    parser.add_argument("--scenario", default="maps/scenario.txt", help="Path to the scenario file.")
+    parser.add_argument("--output", default="simulation.gif", help="Path to the output GIF.")
+    parser.add_argument("--cell-size", type=int, default=48, help="Rendered size of a single cell in pixels.")
+    parser.add_argument("--frame-duration", type=int, default=250, help="GIF frame duration in milliseconds.")
+    return parser.parse_args()
 
-    print("=== START SYMULACJI MAPD ===")
 
-    graph = WarehouseGraph(25, 17)
-    graph.generate_rmfs_layout()
-
-    num_agents, tasks = load_instance("maps/AC0010.txt")
-
-    agents = [
-        Agent(start_node=i + 1, agent_id=i)
-        for i in range(num_agents)
-    ]
-
-    reservation_table = ReservationTable()
-
-    for agent in agents:
-        reservation_table.reserve_start(agent.node)
-
-    print("\n=== PLANOWANIE ŚCIEŻEK ===")
-
-    for agent, task in zip(agents, tasks[:num_agents]):
-
-        print(f"\nAgent {agent.id}")
-        print(f"start {agent.node} -> pickup {task.pickup} -> delivery {task.delivery}")
-
-        path1 = space_time_a_star(
-            graph,
-            agent.node,
-            task.pickup,
-            reservation_table
+def print_summary(plans, makespan: int, output_path: Path) -> None:
+    print(f"[done] Generated GIF: {output_path}")
+    print(f"[done] Makespan: {makespan} steps")
+    print()
+    for plan in plans:
+        task_description = ", ".join(f"{task.task_id}@{task.location_index}" for task in plan.tasks) or "no tasks"
+        print(
+            f"Agent {plan.agent_id}: station {plan.home_index}, "
+            f"path length {len(plan.path) - 1}, tasks [{task_description}]"
         )
 
-        if not path1:
-            print("Brak ścieżki do pickup")
-            continue
 
-        path2 = space_time_a_star(
-            graph,
-            task.pickup,
-            task.delivery,
-            reservation_table,
-            start_time=len(path1) - 1
-        )
+def main() -> None:
+    args = parse_args()
 
-        if not path2:
-            print("Brak ścieżki do delivery")
-            continue
+    print(f"[1/4] Loading layout from {args.layout}")
+    warehouse = load_layout(Path(args.layout))
+    print(f"[1/4] Layout loaded: {warehouse.width}x{warehouse.height}")
 
-        path2 = path2[1:]
+    print(f"[2/4] Loading scenario from {args.scenario}")
+    agent_count, tasks = load_scenario(Path(args.scenario))
+    print(f"[2/4] Scenario loaded: {agent_count} agents, {len(tasks)} tasks")
 
-        full_path = path1 + path2
+    print("[3/4] Planning collision-free routes")
+    plans = build_agent_plans(warehouse, agent_count, tasks)
+    print("[3/4] Route planning finished")
 
-        reservation_table.reserve(full_path)
+    print(f"[4/4] Rendering GIF to {args.output}")
+    makespan = render_frames(
+        warehouse=warehouse,
+        plans=plans,
+        output_path=Path(args.output),
+        cell_size=args.cell_size,
+        frame_duration_ms=args.frame_duration,
+        progress=True,
+    )
 
-        agent.path = full_path
-        agent.task = task
-
-        print("Długość ścieżki:", len(full_path))
-
-    print("\n=== START SYMULACJI ===")
-
-    sim = Simulation(graph, agents, tasks)
-
-    vis = Visualizer(sim)
-
-    vis.save_gif("simulation.gif", fps=3)
+    print_summary(plans, makespan, Path(args.output))
 
 
 if __name__ == "__main__":
