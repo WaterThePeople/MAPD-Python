@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import re
 from pathlib import Path
 
@@ -8,7 +6,11 @@ from mapd.warehouse import WarehouseMap
 
 
 def load_layout(path: Path) -> WarehouseMap:
-    rows = [line.strip() for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    rows = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if stripped:
+            rows.append(stripped)
     return WarehouseMap(rows)
 
 

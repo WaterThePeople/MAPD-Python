@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from mapd.models import Coord
 
 
@@ -13,7 +11,12 @@ class WarehouseMap:
             raise ValueError("All layout rows must have the same width.")
 
         allowed = {"E", "S", "#"}
-        invalid = {cell for row in rows for cell in row if cell not in allowed}
+        invalid = set()
+        for row in rows:
+            for cell in row:
+                if cell not in allowed:
+                    invalid.add(cell)
+
         if invalid:
             raise ValueError(f"Unsupported layout symbols: {sorted(invalid)}")
 
@@ -50,8 +53,15 @@ class WarehouseMap:
 
     def neighbors(self, coord: Coord) -> list[Coord]:
         row, col = coord
-        result: list[Coord] = []
-        for next_coord in ((row - 1, col), (row + 1, col), (row, col - 1), (row, col + 1)):
+        result = []
+        candidates = [
+            (row - 1, col),
+            (row + 1, col),
+            (row, col - 1),
+            (row, col + 1),
+        ]
+
+        for next_coord in candidates:
             if next_coord in self.traversable:
                 result.append(next_coord)
         return result
@@ -60,9 +70,13 @@ class WarehouseMap:
         location = self.index_to_coord(location_index)
         if location in self.traversable:
             return {location}
+
         if location in self.shelves:
-            positions = {coord for coord in self.neighbors(location)}
+            positions = set()
+            for coord in self.neighbors(location):
+                positions.add(coord)
             if not positions:
                 raise ValueError(f"Shelf {location_index} has no accessible pickup position.")
             return positions
+
         raise ValueError(f"Task location {location_index} is not a valid map position.")

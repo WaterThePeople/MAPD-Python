@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import argparse
 from pathlib import Path
 
@@ -7,11 +5,14 @@ from mapd.loader import load_layout, load_scenario
 from mapd.planner import build_agent_plans
 from mapd.renderer import render_frames
 
+scenario1 = "maps/scenario.txt"
+scenario2 = "maps/scenario2.txt"
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Proof-of-concept MAPD simulator with GIF export.")
     parser.add_argument("--layout", default="maps/layout.txt", help="Path to the warehouse layout file.")
-    parser.add_argument("--scenario", default="maps/scenario.txt", help="Path to the scenario file.")
+    parser.add_argument("--scenario", default=scenario2, help="Path to the scenario file.")
     parser.add_argument("--output", default="simulation.gif", help="Path to the output GIF.")
     parser.add_argument("--cell-size", type=int, default=48, help="Rendered size of a single cell in pixels.")
     parser.add_argument("--frame-duration", type=int, default=250, help="GIF frame duration in milliseconds.")

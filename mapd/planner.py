@@ -1,10 +1,6 @@
-from __future__ import annotations
-
 import colorsys
-import heapq
-import math
 from collections import defaultdict
-from typing import Iterable
+from collections import deque
 
 from mapd.models import AgentPlan, Coord, Task
 from mapd.warehouse import WarehouseMap
@@ -12,13 +8,13 @@ from mapd.warehouse import WarehouseMap
 
 class ReservationTable:
     def __init__(self) -> None:
-        self.vertex: dict[int, set[Coord]] = defaultdict(set)
-        self.edge: dict[int, set[tuple[Coord, Coord]]] = defaultdict(set)
-        self.permanent: dict[Coord, int] = {}
+        self.vertex = defaultdict(set)
+        self.edge = defaultdict(set)
+        self.permanent = {}
         self.latest_time = 0
 
     def is_vertex_reserved(self, coord: Coord, time: int) -> bool:
-        if coord in self.vertex.get(time, set()):
+        if coord in self.vertex[time]:
             return True
 
         permanent_from = self.permanent.get(coord)
@@ -30,6 +26,7 @@ class ReservationTable:
     def reserve_path(self, path: list[Coord]) -> None:
         for time, coord in enumerate(path):
             self.vertex[time].add(coord)
+
         for time in range(len(path) - 1):
             self.edge[time].add((path[time], path[time + 1]))
 
@@ -41,20 +38,17 @@ class ReservationTable:
 
 
 def build_color_palette(count: int) -> list[tuple[int, int, int]]:
-    if count <= 0:
-        return []
-
-    palette: list[tuple[int, int, int]] = []
+    palette = []
     for idx in range(count):
-        hue = idx / max(count, 1)
+        hue = idx / count
         red, green, blue = colorsys.hsv_to_rgb(hue, 0.75, 0.92)
         palette.append((int(red * 255), int(green * 255), int(blue * 255)))
     return palette
 
 
-def reconstruct_path(came_from: dict[tuple[Coord, int], tuple[Coord, int]], end_state: tuple[Coord, int]) -> list[Coord]:
+def rebuild_path(came_from: dict[tuple[Coord, int], tuple[Coord, int]], end_state: tuple[Coord, int]) -> list[Coord]:
     state = end_state
-    path: list[Coord] = [state[0]]
+    path = [state[0]]
 
     while state in came_from:
         state = came_from[state]
@@ -62,11 +56,6 @@ def reconstruct_path(came_from: dict[tuple[Coord, int], tuple[Coord, int]], end_
 
     path.reverse()
     return path
-
-
-def heuristic(coord: Coord, goals: Iterable[Coord]) -> int:
-    row, col = coord
-    return min(abs(row - goal_row) + abs(col - goal_col) for goal_row, goal_col in goals)
 
 
 def find_path(
@@ -77,27 +66,30 @@ def find_path(
     goals: set[Coord],
     blocked_cells: set[Coord] | None = None,
 ) -> list[Coord]:
-    blocked_cells = blocked_cells or set()
+    if blocked_cells is None:
+        blocked_cells = set()
+
     max_time = start_time + warehouse.cell_count * 8 + reservations.latest_time + 20
-    frontier: list[tuple[int, int, Coord, int]] = []
-    heapq.heappush(frontier, (heuristic(start, goals), 0, start, start_time))
+    queue = deque()
+    queue.append((start, start_time))
 
-    came_from: dict[tuple[Coord, int], tuple[Coord, int]] = {}
-    best_cost: dict[tuple[Coord, int], int] = {(start, start_time): 0}
+    visited = set()
+    visited.add((start, start_time))
+    came_from = {}
 
-    while frontier:
-        _, cost_so_far, current, time = heapq.heappop(frontier)
-        state = (current, time)
-        if cost_so_far != best_cost.get(state):
-            continue
+    while queue:
+        current, time = queue.popleft()
 
         if current in goals and not reservations.is_vertex_reserved(current, time):
-            return reconstruct_path(came_from, state)
+            return rebuild_path(came_from, (current, time))
 
         if time >= max_time:
             continue
 
-        for next_coord in [current, *warehouse.neighbors(current)]:
+        next_positions = [current]
+        next_positions.extend(warehouse.neighbors(current))
+
+        for next_coord in next_positions:
             if next_coord in blocked_cells:
                 continue
 
@@ -107,15 +99,13 @@ def find_path(
             if reservations.is_edge_conflict(current, next_coord, time):
                 continue
 
-            next_cost = cost_so_far + 1
             next_state = (next_coord, next_time)
-            if next_cost >= best_cost.get(next_state, math.inf):
+            if next_state in visited:
                 continue
 
-            best_cost[next_state] = next_cost
-            came_from[next_state] = state
-            priority = next_cost + heuristic(next_coord, goals)
-            heapq.heappush(frontier, (priority, next_cost, next_coord, next_time))
+            visited.add(next_state)
+            came_from[next_state] = (current, time)
+            queue.append(next_state)
 
     raise RuntimeError(f"Could not find a collision-free path from {start} at time {start_time}.")
 
@@ -133,7 +123,10 @@ def assign_home_stations(warehouse: WarehouseMap, agent_count: int) -> dict[int,
         )
 
     ordered_stations = sorted(warehouse.stations, key=warehouse.coord_to_index)
-    return {agent_id: ordered_stations[agent_id] for agent_id in range(agent_count)}
+    homes = {}
+    for agent_id in range(agent_count):
+        homes[agent_id] = ordered_stations[agent_id]
+    return homes
 
 
 def build_agent_plans(warehouse: WarehouseMap, agent_count: int, tasks: list[Task]) -> list[AgentPlan]:
@@ -141,7 +134,10 @@ def build_agent_plans(warehouse: WarehouseMap, agent_count: int, tasks: list[Tas
         if task.agent_id < 0 or task.agent_id >= agent_count:
             raise ValueError(f"Task {task.task_id} references unknown agent {task.agent_id}.")
 
-    tasks_by_agent: dict[int, list[Task]] = {agent_id: [] for agent_id in range(agent_count)}
+    tasks_by_agent = {}
+    for agent_id in range(agent_count):
+        tasks_by_agent[agent_id] = []
+
     for task in sorted(tasks, key=lambda item: item.task_id):
         tasks_by_agent[task.agent_id].append(task)
 
@@ -149,7 +145,7 @@ def build_agent_plans(warehouse: WarehouseMap, agent_count: int, tasks: list[Tas
     dedicated_stations = set(homes.values())
     colors = build_color_palette(agent_count)
     reservations = ReservationTable()
-    plans: list[AgentPlan] = []
+    plans = []
 
     for agent_id in range(agent_count):
         home = homes[agent_id]
@@ -157,7 +153,7 @@ def build_agent_plans(warehouse: WarehouseMap, agent_count: int, tasks: list[Tas
         current = home
         current_time = 0
         path = [home]
-        pickup_times: dict[int, int] = {}
+        pickup_times = {}
 
         for task in tasks_by_agent[agent_id]:
             pickup_goals = warehouse.pickup_positions(task.location_index)

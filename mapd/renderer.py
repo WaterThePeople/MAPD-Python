@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from collections import defaultdict
 from pathlib import Path
 
@@ -22,7 +20,7 @@ def draw_centered_text(
     bounds: tuple[int, int, int, int],
     text: str,
     fill: tuple[int, int, int],
-    font: ImageFont.ImageFont | ImageFont.FreeTypeFont,
+    font,
 ) -> None:
     left, top, right, bottom = bounds
     bbox = draw.textbbox((0, 0), text, font=font)
@@ -39,7 +37,7 @@ def draw_station_label(
     top: int,
     cell_size: int,
     label: str,
-    font: ImageFont.ImageFont | ImageFont.FreeTypeFont,
+    font,
 ) -> None:
     padding = max(2, cell_size // 10)
     draw_centered_text(
@@ -58,7 +56,7 @@ def draw_agent(
     cell_size: int,
     color: tuple[int, int, int],
     label: str,
-    font: ImageFont.ImageFont | ImageFont.FreeTypeFont,
+    font,
 ) -> None:
     padding = max(6, cell_size // 6)
     circle_bounds = (left + padding, top + padding, left + cell_size - padding, top + cell_size - padding)
@@ -76,6 +74,18 @@ def progress_points(total_frames: int) -> set[int]:
     return points
 
 
+def build_task_maps(plans: list[AgentPlan]) -> tuple[dict[int, int], dict[int, list]]:
+    package_pickups = {}
+    tasks_by_location = defaultdict(list)
+
+    for plan in plans:
+        for task in plan.tasks:
+            package_pickups[task.task_id] = plan.pickup_times[task.task_id]
+            tasks_by_location[task.location_index].append(task)
+
+    return package_pickups, tasks_by_location
+
+
 def render_frames(
     warehouse: WarehouseMap,
     plans: list[AgentPlan],
@@ -89,19 +99,9 @@ def render_frames(
     max_time = max(len(plan.path) for plan in plans) - 1 if plans else 0
     total_frames = max_time + 1
     progress_marks = progress_points(total_frames)
+    package_pickups, tasks_by_location = build_task_maps(plans)
 
-    package_pickups = {
-        task.task_id: plan.pickup_times[task.task_id]
-        for plan in plans
-        for task in plan.tasks
-    }
-
-    tasks_by_location: dict[int, list] = defaultdict(list)
-    for plan in plans:
-        for task in plan.tasks:
-            tasks_by_location[task.location_index].append(task)
-
-    frames: list[Image.Image] = []
+    frames = []
     image_width = warehouse.width * cell_size
     image_height = warehouse.height * cell_size
     station_outline = (32, 160, 64)
