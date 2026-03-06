@@ -135,7 +135,90 @@ def assign_home_stations(warehouse: WarehouseMap, agent_count: int) -> dict[int,
     return homes
 
 
-def build_agent_plans(warehouse: WarehouseMap, agent_count: int, tasks: list[Task]) -> list[AgentPlan]:
+def shortest_distance(
+    warehouse: WarehouseMap,
+    start: Coord,
+    goals: set[Coord],
+    blocked_cells: set[Coord],
+) -> int:
+    queue = deque()
+    queue.append((start, 0))
+    visited = {start}
+
+    while queue:
+        current, distance = queue.popleft()
+        if current in goals:
+            return distance
+
+        for next_coord in warehouse.neighbors(current):
+            if next_coord in blocked_cells:
+                continue
+            if next_coord in visited:
+                continue
+
+            visited.add(next_coord)
+            queue.append((next_coord, distance + 1))
+
+    raise RuntimeError(f"Could not find a static path from {start} to task goals.")
+
+
+def assign_available_tasks(warehouse: WarehouseMap, agent_count: int, tasks: list[Task]) -> list[Task]:
+    homes = assign_home_stations(warehouse, agent_count)
+    all_homes = set(homes.values())
+    availability = {}
+    distance_cache = {}
+    assigned_tasks = []
+
+    for agent_id in range(agent_count):
+        availability[agent_id] = 0
+
+    ordered_tasks = sorted(tasks, key=lambda task: (task.release_time, task.task_id))
+
+    for task in ordered_tasks:
+        best_agent_id = None
+        best_finish_time = None
+
+        for agent_id in range(agent_count):
+            blocked_cells = all_homes - {homes[agent_id]}
+            cache_key = (agent_id, task.location_index)
+
+            if cache_key not in distance_cache:
+                pickup_goals = warehouse.pickup_positions(task.location_index)
+                distance_cache[cache_key] = shortest_distance(
+                    warehouse,
+                    homes[agent_id],
+                    pickup_goals,
+                    blocked_cells,
+                )
+
+            travel_time = distance_cache[cache_key] * 2
+            start_time = max(availability[agent_id], task.release_time)
+            finish_time = start_time + travel_time
+
+            if best_finish_time is None or finish_time < best_finish_time:
+                best_agent_id = agent_id
+                best_finish_time = finish_time
+            elif finish_time == best_finish_time and agent_id < best_agent_id:
+                best_agent_id = agent_id
+                best_finish_time = finish_time
+
+        assigned_tasks.append(
+            Task(
+                task_id=task.task_id,
+                agent_id=best_agent_id,
+                location_index=task.location_index,
+                release_time=task.release_time,
+            )
+        )
+        availability[best_agent_id] = best_finish_time
+
+    return assigned_tasks
+
+
+def build_agent_plans(warehouse: WarehouseMap, agent_count: int, tasks: list[Task], mode: str) -> list[AgentPlan]:
+    if mode == "Available":
+        tasks = assign_available_tasks(warehouse, agent_count, tasks)
+
     for task in tasks:
         if task.agent_id < 0 or task.agent_id >= agent_count:
             raise ValueError(f"Task {task.task_id} references unknown agent {task.agent_id}.")
@@ -144,7 +227,7 @@ def build_agent_plans(warehouse: WarehouseMap, agent_count: int, tasks: list[Tas
     for agent_id in range(agent_count):
         tasks_by_agent[agent_id] = []
 
-    for task in sorted(tasks, key=lambda item: item.task_id):
+    for task in tasks:
         tasks_by_agent[task.agent_id].append(task)
 
     homes = assign_home_stations(warehouse, agent_count)

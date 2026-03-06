@@ -5,15 +5,14 @@ from mapd.loader import load_layout, load_scenario
 from mapd.planner import build_agent_plans
 from mapd.renderer import render_frames
 
-scenario1 = "maps/scenario.txt"
-scenario2 = "maps/scenario2.txt"
+scenarios = ["maps/scenarios/0.txt","maps/scenarios/1.txt","maps/scenarios/2.txt","maps/scenarios/3.txt"]
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Proof-of-concept MAPD simulator with GIF export.")
     parser.add_argument("--layout", default="maps/layout.txt", help="Path to the warehouse layout file.")
-    parser.add_argument("--scenario", default=scenario2, help="Path to the scenario file.")
-    parser.add_argument("--output", default="simulation.gif", help="Path to the output GIF.")
+    parser.add_argument("--scenario", default=scenarios[0], help="Path to the scenario file.")
+    parser.add_argument("--output", default="gifs/simulation.gif", help="Path to the output GIF.")
     parser.add_argument("--cell-size", type=int, default=48, help="Rendered size of a single cell in pixels.")
     parser.add_argument("--frame-duration", type=int, default=250, help="GIF frame duration in milliseconds.")
     return parser.parse_args()
@@ -42,11 +41,11 @@ def main() -> None:
     print(f"[1/4] Layout loaded: {warehouse.width}x{warehouse.height}")
 
     print(f"[2/4] Loading scenario from {args.scenario}")
-    agent_count, tasks = load_scenario(Path(args.scenario))
-    print(f"[2/4] Scenario loaded: {agent_count} agents, {len(tasks)} tasks")
+    agent_count, tasks, mode = load_scenario(Path(args.scenario))
+    print(f"[2/4] Scenario loaded: {agent_count} agents, {len(tasks)} tasks, mode={mode}")
 
     print("[3/4] Planning collision-free routes")
-    plans = build_agent_plans(warehouse, agent_count, tasks)
+    plans = build_agent_plans(warehouse, agent_count, tasks, mode)
     print("[3/4] Route planning finished")
 
     print(f"[4/4] Rendering GIF to {args.output}")
