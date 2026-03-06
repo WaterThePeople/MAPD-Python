@@ -116,6 +116,12 @@ def merge_segments(base_path: list[Coord], segment: list[Coord]) -> list[Coord]:
     return [*base_path, *segment[1:]]
 
 
+def wait_until_time(path: list[Coord], target_time: int) -> list[Coord]:
+    while len(path) - 1 < target_time:
+        path.append(path[-1])
+    return path
+
+
 def assign_home_stations(warehouse: WarehouseMap, agent_count: int) -> dict[int, Coord]:
     if len(warehouse.stations) < agent_count:
         raise ValueError(
@@ -156,6 +162,11 @@ def build_agent_plans(warehouse: WarehouseMap, agent_count: int, tasks: list[Tas
         pickup_times = {}
 
         for task in tasks_by_agent[agent_id]:
+            if current_time < task.release_time:
+                path = wait_until_time(path, task.release_time)
+                current = path[-1]
+                current_time = len(path) - 1
+
             pickup_goals = warehouse.pickup_positions(task.location_index)
             to_pickup = find_path(
                 warehouse,

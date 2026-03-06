@@ -9,6 +9,7 @@ class Task:
     task_id: int
     agent_id: int
     location_index: int
+    release_time: int
 
 
 @dataclass

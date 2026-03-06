@@ -74,16 +74,18 @@ def progress_points(total_frames: int) -> set[int]:
     return points
 
 
-def build_task_maps(plans: list[AgentPlan]) -> tuple[dict[int, int], dict[int, list]]:
+def build_task_maps(plans: list[AgentPlan]) -> tuple[dict[int, int], dict[int, int], dict[int, list]]:
     package_pickups = {}
+    package_release_times = {}
     tasks_by_location = defaultdict(list)
 
     for plan in plans:
         for task in plan.tasks:
             package_pickups[task.task_id] = plan.pickup_times[task.task_id]
+            package_release_times[task.task_id] = task.release_time
             tasks_by_location[task.location_index].append(task)
 
-    return package_pickups, tasks_by_location
+    return package_pickups, package_release_times, tasks_by_location
 
 
 def render_frames(
@@ -99,7 +101,7 @@ def render_frames(
     max_time = max(len(plan.path) for plan in plans) - 1 if plans else 0
     total_frames = max_time + 1
     progress_marks = progress_points(total_frames)
-    package_pickups, tasks_by_location = build_task_maps(plans)
+    package_pickups, package_release_times, tasks_by_location = build_task_maps(plans)
 
     frames = []
     image_width = warehouse.width * cell_size
@@ -142,7 +144,7 @@ def render_frames(
                     draw.rectangle((left, top, right, bottom), fill=(255, 255, 255), outline=grid_color, width=1)
 
                 for task in tasks_by_location.get(warehouse.coord_to_index(coord), []):
-                    if time < package_pickups[task.task_id]:
+                    if package_release_times[task.task_id] <= time < package_pickups[task.task_id]:
                         draw_cross(draw, left, top, cell_size, plans[task.agent_id].color)
 
         for plan in plans:

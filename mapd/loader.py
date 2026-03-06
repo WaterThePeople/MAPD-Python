@@ -30,9 +30,20 @@ def load_scenario(path: Path) -> tuple[int, list[Task]]:
         if not stripped or not stripped[0].isdigit():
             continue
         numbers = [int(part) for part in stripped.split()]
-        if len(numbers) != 3:
+        if len(numbers) not in (3, 4):
             raise ValueError(f"Invalid scenario line: {line}")
-        tasks.append(Task(task_id=numbers[0], agent_id=numbers[1], location_index=numbers[2]))
+        release_time = 0
+        if len(numbers) == 4:
+            release_time = numbers[3]
+
+        tasks.append(
+            Task(
+                task_id=numbers[0],
+                agent_id=numbers[1],
+                location_index=numbers[2],
+                release_time=release_time,
+            )
+        )
 
     if len(tasks) != expected_task_count:
         raise ValueError(f"Scenario declares {expected_task_count} tasks but contains {len(tasks)}.")

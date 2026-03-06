@@ -24,7 +24,10 @@ def print_summary(plans, makespan: int, output_path: Path) -> None:
     print(f"[done] Makespan: {makespan} steps")
     print()
     for plan in plans:
-        task_description = ", ".join(f"{task.task_id}@{task.location_index}" for task in plan.tasks) or "no tasks"
+        task_description = ", ".join(
+            f"{task.task_id}@{task.location_index}[t={task.release_time}]"
+            for task in plan.tasks
+        ) or "no tasks"
         print(
             f"Agent {plan.agent_id}: station {plan.home_index}, "
             f"path length {len(plan.path) - 1}, tasks [{task_description}]"
