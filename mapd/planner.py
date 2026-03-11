@@ -177,6 +177,7 @@ def assign_available_tasks(warehouse: WarehouseMap, agent_count: int, tasks: lis
     for task in ordered_tasks:
         best_agent_id = None
         best_finish_time = None
+        best_lateness = None
 
         for agent_id in range(agent_count):
             blocked_cells = all_homes - {homes[agent_id]}
@@ -194,13 +195,28 @@ def assign_available_tasks(warehouse: WarehouseMap, agent_count: int, tasks: lis
             travel_time = distance_cache[cache_key] * 2
             start_time = max(availability[agent_id], task.release_time)
             finish_time = start_time + travel_time
+            lateness = 0
+            if task.deadline is not None and finish_time > task.deadline:
+                lateness = finish_time - task.deadline
 
-            if best_finish_time is None or finish_time < best_finish_time:
+            if best_finish_time is None:
                 best_agent_id = agent_id
                 best_finish_time = finish_time
-            elif finish_time == best_finish_time and agent_id < best_agent_id:
-                best_agent_id = agent_id
-                best_finish_time = finish_time
+                best_lateness = lateness
+            else:
+                if lateness < best_lateness:
+                    best_agent_id = agent_id
+                    best_finish_time = finish_time
+                    best_lateness = lateness
+                elif lateness == best_lateness:
+                    if finish_time < best_finish_time:
+                        best_agent_id = agent_id
+                        best_finish_time = finish_time
+                        best_lateness = lateness
+                    elif finish_time == best_finish_time and agent_id < best_agent_id:
+                        best_agent_id = agent_id
+                        best_finish_time = finish_time
+                        best_lateness = lateness
 
         assigned_tasks.append(
             Task(
@@ -208,6 +224,7 @@ def assign_available_tasks(warehouse: WarehouseMap, agent_count: int, tasks: lis
                 agent_id=best_agent_id,
                 location_index=task.location_index,
                 release_time=task.release_time,
+                deadline=task.deadline,
             )
         )
         availability[best_agent_id] = best_finish_time
@@ -243,6 +260,8 @@ def build_agent_plans(warehouse: WarehouseMap, agent_count: int, tasks: list[Tas
         current_time = 0
         path = [home]
         pickup_times = {}
+        completion_times = {}
+        missed_deadlines = []
 
         for task in tasks_by_agent[agent_id]:
             if current_time < task.release_time:
@@ -275,6 +294,9 @@ def build_agent_plans(warehouse: WarehouseMap, agent_count: int, tasks: list[Tas
             path = merge_segments(path, back_home)
             current = path[-1]
             current_time = len(path) - 1
+            completion_times[task.task_id] = current_time
+            if task.deadline is not None and current_time > task.deadline:
+                missed_deadlines.append(task.task_id)
 
         reservations.reserve_path(path)
         plans.append(
@@ -286,6 +308,8 @@ def build_agent_plans(warehouse: WarehouseMap, agent_count: int, tasks: list[Tas
                 path=path,
                 tasks=tasks_by_agent[agent_id],
                 pickup_times=pickup_times,
+                completion_times=completion_times,
+                missed_deadlines=missed_deadlines,
             )
         )
 

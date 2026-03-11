@@ -10,6 +10,7 @@ class Task:
     agent_id: int
     location_index: int
     release_time: int
+    deadline: int | None
 
 
 @dataclass
@@ -21,3 +22,5 @@ class AgentPlan:
     path: list[Coord]
     tasks: list[Task]
     pickup_times: dict[int, int]
+    completion_times: dict[int, int]
+    missed_deadlines: list[int]

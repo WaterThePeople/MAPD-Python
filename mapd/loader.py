@@ -34,11 +34,14 @@ def load_scenario(path: Path) -> tuple[int, list[Task]]:
         if not stripped or not stripped[0].isdigit():
             continue
         numbers = [int(part) for part in stripped.split()]
-        if len(numbers) not in (3, 4):
+        if len(numbers) not in (3, 4, 5):
             raise ValueError(f"Invalid scenario line: {line}")
         release_time = 0
-        if len(numbers) == 4:
+        deadline = None
+        if len(numbers) >= 4:
             release_time = numbers[3]
+        if len(numbers) == 5:
+            deadline = numbers[4]
 
         tasks.append(
             Task(
@@ -46,6 +49,7 @@ def load_scenario(path: Path) -> tuple[int, list[Task]]:
                 agent_id=numbers[1],
                 location_index=numbers[2],
                 release_time=release_time,
+                deadline=deadline,
             )
         )
 

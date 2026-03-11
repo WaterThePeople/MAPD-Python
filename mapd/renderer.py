@@ -77,15 +77,17 @@ def progress_points(total_frames: int) -> set[int]:
 def build_task_maps(plans: list[AgentPlan]) -> tuple[dict[int, int], dict[int, int], dict[int, list]]:
     package_pickups = {}
     package_release_times = {}
+    package_deadlines = {}
     tasks_by_location = defaultdict(list)
 
     for plan in plans:
         for task in plan.tasks:
             package_pickups[task.task_id] = plan.pickup_times[task.task_id]
             package_release_times[task.task_id] = task.release_time
+            package_deadlines[task.task_id] = task.deadline
             tasks_by_location[task.location_index].append(task)
 
-    return package_pickups, package_release_times, tasks_by_location
+    return package_pickups, package_release_times, package_deadlines, tasks_by_location
 
 
 def render_frames(
@@ -101,27 +103,50 @@ def render_frames(
     max_time = max(len(plan.path) for plan in plans) - 1 if plans else 0
     total_frames = max_time + 1
     progress_marks = progress_points(total_frames)
-    package_pickups, package_release_times, tasks_by_location = build_task_maps(plans)
+    package_pickups, package_release_times, package_deadlines, tasks_by_location = build_task_maps(plans)
 
     frames = []
     image_width = warehouse.width * cell_size
     image_height = warehouse.height * cell_size
+    header_height = max(36, cell_size)
+    total_height = image_height + header_height
     station_outline = (32, 160, 64)
     grid_color = (215, 215, 215)
+    header_bg = (245, 245, 245)
+    header_border = (200, 200, 200)
 
     for time in range(total_frames):
         if progress and time in progress_marks:
             percent = int(round((time / max(total_frames - 1, 1)) * 100))
             print(f"  [render] frame {time + 1}/{total_frames} ({percent}%)")
 
-        image = Image.new("RGB", (image_width, image_height), (255, 255, 255))
+        image = Image.new("RGB", (image_width, total_height), (255, 255, 255))
         draw = ImageDraw.Draw(image)
+
+        draw.rectangle((0, 0, image_width, header_height), fill=header_bg, outline=header_border, width=1)
+
+        done_count = 0
+        missed_count = 0
+        total_tasks = len(package_pickups)
+
+        for plan in plans:
+            for task in plan.tasks:
+                completion_time = plan.completion_times.get(task.task_id, 0)
+                if time >= completion_time:
+                    done_count += 1
+                if task.deadline is not None:
+                    if time > task.deadline and completion_time > task.deadline:
+                        missed_count += 1
+
+        draw.text((8, 6), f"Time: {time}", fill=(30, 30, 30), font=font)
+        draw.text((8, 6 + 14), f"Done: {done_count}/{total_tasks}", fill=(30, 30, 30), font=font)
+        draw.text((8, 6 + 28), f"Missed deadlines: {missed_count}", fill=(30, 30, 30), font=font)
 
         for row in range(warehouse.height):
             for col in range(warehouse.width):
                 coord = (row, col)
                 left = col * cell_size
-                top = row * cell_size
+                top = row * cell_size + header_height
                 right = left + cell_size
                 bottom = top + cell_size
                 cell = warehouse.rows[row][col]
@@ -145,12 +170,20 @@ def render_frames(
 
                 for task in tasks_by_location.get(warehouse.coord_to_index(coord), []):
                     if package_release_times[task.task_id] <= time < package_pickups[task.task_id]:
-                        draw_cross(draw, left, top, cell_size, plans[task.agent_id].color)
+                        is_late = False
+                        deadline = package_deadlines[task.task_id]
+                        if deadline is not None and time > deadline:
+                            is_late = True
+
+                        color = plans[task.agent_id].color
+                        if is_late:
+                            color = (220, 20, 20)
+                        draw_cross(draw, left, top, cell_size, color)
 
         for plan in plans:
             position = plan.path[time] if time < len(plan.path) else plan.path[-1]
             left = position[1] * cell_size
-            top = position[0] * cell_size
+            top = position[0] * cell_size + header_height
             draw_agent(draw, left, top, cell_size, plan.color, str(plan.agent_id), font)
 
         frames.append(image)

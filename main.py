@@ -23,14 +23,33 @@ def print_summary(plans, makespan: int, output_path: Path) -> None:
     print(f"[done] Makespan: {makespan} steps")
     print()
     for plan in plans:
-        task_description = ", ".join(
-            f"{task.task_id}@{task.location_index}[t={task.release_time}]"
-            for task in plan.tasks
-        ) or "no tasks"
+        task_parts = []
+        for task in plan.tasks:
+            deadline = "none" if task.deadline is None else str(task.deadline)
+            completion = plan.completion_times.get(task.task_id)
+            late = ""
+            if task.deadline is not None and completion is not None and completion > task.deadline:
+                late = f",late={completion - task.deadline}"
+            task_parts.append(
+                f"{task.task_id}@{task.location_index}[t={task.release_time},d={deadline}{late}]"
+            )
+
+        task_description = ", ".join(task_parts) or "no tasks"
         print(
             f"Agent {plan.agent_id}: station {plan.home_index}, "
             f"path length {len(plan.path) - 1}, tasks [{task_description}]"
         )
+
+    late_tasks = []
+    for plan in plans:
+        if plan.missed_deadlines:
+            for task_id in plan.missed_deadlines:
+                late_tasks.append((plan.agent_id, task_id))
+    if late_tasks:
+        print()
+        print("[warn] Missed deadlines:")
+        for agent_id, task_id in late_tasks:
+            print(f"  agent {agent_id}, task {task_id}")
 
 
 def main() -> None:
