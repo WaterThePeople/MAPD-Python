@@ -55,13 +55,14 @@ def draw_agent(
     top: int,
     cell_size: int,
     color: tuple[int, int, int],
-    label: str,
+    label: str | None,
     font,
 ) -> None:
     padding = max(6, cell_size // 6)
     circle_bounds = (left + padding, top + padding, left + cell_size - padding, top + cell_size - padding)
     draw.ellipse(circle_bounds, fill=color, outline=(20, 20, 20), width=2)
-    draw_centered_text(draw, (left, top, left + cell_size, top + cell_size), label, (255, 255, 255), font)
+    if label:
+        draw_centered_text(draw, (left, top, left + cell_size, top + cell_size), label, (255, 255, 255), font)
 
 
 def progress_points(total_frames: int) -> set[int]:
@@ -90,6 +91,17 @@ def build_task_maps(plans: list[AgentPlan]) -> tuple[dict[int, int], dict[int, i
     return package_pickups, package_release_times, package_deadlines, tasks_by_location
 
 
+def carried_task_id(plan: AgentPlan, time: int) -> str | None:
+    for task in plan.tasks:
+        pickup_time = plan.pickup_times.get(task.task_id)
+        completion_time = plan.completion_times.get(task.task_id)
+        if pickup_time is None or completion_time is None:
+            continue
+        if pickup_time <= time < completion_time:
+            return str(task.task_id)
+    return None
+
+
 def render_frames(
     warehouse: WarehouseMap,
     plans: list[AgentPlan],
@@ -99,7 +111,6 @@ def render_frames(
     progress: bool = False,
 ) -> int:
     font = ImageFont.load_default()
-    station_labels = {plan.home: str(plan.agent_id) for plan in plans}
     max_time = max(len(plan.path) for plan in plans) - 1 if plans else 0
     total_frames = max_time + 1
     progress_marks = progress_points(total_frames)
@@ -162,9 +173,6 @@ def render_frames(
                         outline=station_outline,
                         width=3,
                     )
-                    label = station_labels.get(coord)
-                    if label is not None:
-                        draw_station_label(draw, left, top, cell_size, label, font)
                 else:
                     draw.rectangle((left, top, right, bottom), fill=(255, 255, 255), outline=grid_color, width=1)
 
@@ -184,7 +192,8 @@ def render_frames(
             position = plan.path[time] if time < len(plan.path) else plan.path[-1]
             left = position[1] * cell_size
             top = position[0] * cell_size + header_height
-            draw_agent(draw, left, top, cell_size, plan.color, str(plan.agent_id), font)
+            label = carried_task_id(plan, time)
+            draw_agent(draw, left, top, cell_size, plan.color, label, font)
 
         frames.append(image)
 

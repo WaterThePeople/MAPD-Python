@@ -1,0 +1,50 @@
+Scenario suite: 0
+
+== 0_set_set ==
+[done] Generated GIF: gifs\0_set_set.gif
+[done] Makespan: 108 steps
+
+Agent 0: station 62, path length 108, tasks [1@78[t=0,d=60], 6@357[t=10,d=90,late=18]]
+Agent 1: station 63, path length 58, tasks [2@287[t=0,d=70], 7@188[t=15,d=80]]
+Agent 2: station 92, path length 89, tasks [3@315[t=5,d=80], 8@230[t=20,d=90]]
+Agent 3: station 93, path length 47, tasks [4@337[t=5,d=85], 9@69[t=25,d=85]]
+Agent 4: station 122, path length 100, tasks [5@87[t=10,d=75], 10@314[t=30,d=100]]
+
+[warn] Missed deadlines:
+  agent 0, task 6
+
+== 0_set_available ==
+[done] Generated GIF: gifs\0_set_available.gif
+[done] Makespan: 92 steps
+
+Agent 0: start station 62, path length 92, tasks [1@78[t=0,d=60], 6@357[t=10,d=90,late=2]]
+Agent 1: start station 63, path length 49, tasks [2@287[t=0,d=70], 7@188[t=15,d=80]]
+Agent 2: start station 92, path length 71, tasks [3@315[t=5,d=80], 8@230[t=20,d=90]]
+Agent 3: start station 93, path length 48, tasks [4@337[t=5,d=85], 9@69[t=25,d=85]]
+Agent 4: start station 122, path length 92, tasks [5@87[t=10,d=75], 10@314[t=30,d=100]]
+
+[warn] Missed deadlines:
+  agent 0, task 6
+
+== 0_available_set ==
+[done] Generated GIF: gifs\0_available_set.gif
+[done] Makespan: 102 steps
+
+Agent 0: station 62, path length 62, tasks [5@87[t=10,d=75]]
+Agent 1: station 63, path length 102, tasks [1@78[t=0,d=60], 6@357[t=10,d=90,late=12]]
+Agent 2: station 92, path length 87, tasks [4@337[t=5,d=85], 7@188[t=15,d=80], 10@314[t=30,d=100]]
+Agent 3: station 93, path length 84, tasks [2@287[t=0,d=70], 8@230[t=20,d=90]]
+Agent 4: station 122, path length 61, tasks [3@315[t=5,d=80], 9@69[t=25,d=85]]
+
+[warn] Missed deadlines:
+  agent 1, task 6
+
+== 0_available_available ==
+[done] Generated GIF: gifs\0_available_available.gif
+[done] Makespan: 74 steps
+
+Agent 0: start station 62, path length 61, tasks [5@87[t=10,d=75]]
+Agent 1: start station 63, path length 69, tasks [1@78[t=0,d=60], 7@188[t=15,d=80], 10@314[t=30,d=100]]
+Agent 2: start station 92, path length 74, tasks [4@337[t=5,d=85], 6@357[t=10,d=90]]
+Agent 3: start station 93, path length 69, tasks [2@287[t=0,d=70], 8@230[t=20,d=90]]
+Agent 4: start station 122, path length 57, tasks [3@315[t=5,d=80], 9@69[t=25,d=85]]

@@ -65,9 +65,12 @@ def find_path(
     start_time: int,
     goals: set[Coord],
     blocked_cells: set[Coord] | None = None,
+    goal_available_after: dict[Coord, int] | None = None,
 ) -> list[Coord]:
     if blocked_cells is None:
         blocked_cells = set()
+    if goal_available_after is None:
+        goal_available_after = {}
 
     max_time = start_time + warehouse.cell_count * 8 + reservations.latest_time + 20
     queue = deque()
@@ -80,7 +83,11 @@ def find_path(
     while queue:
         current, time = queue.popleft()
 
-        if current in goals and not reservations.is_vertex_reserved(current, time):
+        if (
+            current in goals
+            and not reservations.is_vertex_reserved(current, time)
+            and time >= goal_available_after.get(current, 0)
+        ):
             return rebuild_path(came_from, (current, time))
 
         if time >= max_time:
@@ -116,10 +123,66 @@ def merge_segments(base_path: list[Coord], segment: list[Coord]) -> list[Coord]:
     return [*base_path, *segment[1:]]
 
 
-def wait_until_time(path: list[Coord], target_time: int) -> list[Coord]:
-    while len(path) - 1 < target_time:
-        path.append(path[-1])
-    return path
+def wait_until_time(
+    warehouse: WarehouseMap,
+    reservations: ReservationTable,
+    path: list[Coord],
+    target_time: int,
+    blocked_cells: set[Coord] | None = None,
+) -> list[Coord]:
+    if blocked_cells is None:
+        blocked_cells = set()
+
+    start = path[-1]
+    start_time = len(path) - 1
+    if start_time >= target_time:
+        return path
+
+    can_wait = True
+    for time in range(start_time + 1, target_time + 1):
+        if reservations.is_vertex_reserved(start, time):
+            can_wait = False
+            break
+
+    if can_wait:
+        while len(path) - 1 < target_time:
+            path.append(path[-1])
+        return path
+
+    queue = deque()
+    queue.append((start, start_time))
+    visited = {(start, start_time)}
+    came_from = {}
+
+    while queue:
+        current, time = queue.popleft()
+        if time == target_time:
+            wait_path = rebuild_path(came_from, (current, time))
+            return merge_segments(path, wait_path)
+
+        next_positions = [current]
+        next_positions.extend(warehouse.neighbors(current))
+        for next_coord in next_positions:
+            if next_coord in blocked_cells:
+                continue
+
+            next_time = time + 1
+            if reservations.is_vertex_reserved(next_coord, next_time):
+                continue
+            if reservations.is_edge_conflict(current, next_coord, time):
+                continue
+
+            state = (next_coord, next_time)
+            if state in visited:
+                continue
+
+            visited.add(state)
+            came_from[state] = (current, time)
+            queue.append(state)
+
+    raise RuntimeError(
+        f"Could not find a collision-free waiting path from {start} at time {start_time} to time {target_time}."
+    )
 
 
 def assign_home_stations(warehouse: WarehouseMap, agent_count: int) -> dict[int, Coord]:
@@ -162,11 +225,17 @@ def shortest_distance(
     raise RuntimeError(f"Could not find a static path from {start} to task goals.")
 
 
-def assign_available_tasks(warehouse: WarehouseMap, agent_count: int, tasks: list[Task]) -> list[Task]:
+def assign_available_tasks(
+    warehouse: WarehouseMap,
+    agent_count: int,
+    tasks: list[Task],
+    station_mode: str,
+) -> list[Task]:
     homes = assign_home_stations(warehouse, agent_count)
-    all_homes = set(homes.values())
     availability = {}
     distance_cache = {}
+    return_cache = {}
+    station_goals = set(warehouse.stations)
     assigned_tasks = []
 
     for agent_id in range(agent_count):
@@ -180,7 +249,7 @@ def assign_available_tasks(warehouse: WarehouseMap, agent_count: int, tasks: lis
         best_lateness = None
 
         for agent_id in range(agent_count):
-            blocked_cells = all_homes - {homes[agent_id]}
+            blocked_cells = set()
             cache_key = (agent_id, task.location_index)
 
             if cache_key not in distance_cache:
@@ -192,7 +261,18 @@ def assign_available_tasks(warehouse: WarehouseMap, agent_count: int, tasks: lis
                     blocked_cells,
                 )
 
-            travel_time = distance_cache[cache_key] * 2
+            distance_to_pickup = distance_cache[cache_key]
+            if station_mode == "Available":
+                if task.location_index not in return_cache:
+                    pickup_goals = warehouse.pickup_positions(task.location_index)
+                    return_cache[task.location_index] = min(
+                        shortest_distance(warehouse, pickup, station_goals, set()) for pickup in pickup_goals
+                    )
+                return_distance = return_cache[task.location_index]
+            else:
+                return_distance = distance_to_pickup
+
+            travel_time = distance_to_pickup + return_distance
             start_time = max(availability[agent_id], task.release_time)
             finish_time = start_time + travel_time
             lateness = 0
@@ -232,9 +312,84 @@ def assign_available_tasks(warehouse: WarehouseMap, agent_count: int, tasks: lis
     return assigned_tasks
 
 
-def build_agent_plans(warehouse: WarehouseMap, agent_count: int, tasks: list[Task], mode: str) -> list[AgentPlan]:
+def reserve_initial_positions(
+    reservations: ReservationTable,
+    homes: dict[int, Coord],
+    tasks_by_agent: dict[int, list[Task]],
+) -> None:
+    for agent_id, home in homes.items():
+        tasks = tasks_by_agent.get(agent_id, [])
+        if not tasks:
+            reservations.vertex[0].add(home)
+            reservations.permanent[home] = 0
+            reservations.latest_time = max(reservations.latest_time, 0)
+            continue
+
+        first_release = min(task.release_time for task in tasks)
+        for time in range(first_release + 1):
+            reservations.vertex[time].add(home)
+        reservations.latest_time = max(reservations.latest_time, first_release)
+
+
+def estimate_finish_times(
+    warehouse: WarehouseMap,
+    tasks_by_agent: dict[int, list[Task]],
+    homes: dict[int, Coord],
+) -> dict[int, int]:
+    estimates: dict[int, int] = {}
+    distance_cache: dict[tuple[int, int], int] = {}
+
+    for agent_id, tasks in tasks_by_agent.items():
+        home = homes[agent_id]
+        current_time = 0
+        for task in tasks:
+            if current_time < task.release_time:
+                current_time = task.release_time
+
+            cache_key = (agent_id, task.location_index)
+            if cache_key not in distance_cache:
+                pickup_goals = warehouse.pickup_positions(task.location_index)
+                distance_cache[cache_key] = shortest_distance(warehouse, home, pickup_goals, set())
+
+            current_time += distance_cache[cache_key] * 2
+
+        estimates[agent_id] = current_time
+
+    return estimates
+
+
+def clear_home_reservation(reservations: ReservationTable, home: Coord, until_time: int) -> None:
+    for time in range(until_time + 1):
+        if home in reservations.vertex.get(time, set()):
+            reservations.vertex[time].discard(home)
+
+
+def station_availability(
+    reservations: ReservationTable,
+    stations: set[Coord],
+) -> tuple[set[Coord], dict[Coord, int]]:
+    permanently_taken = set(reservations.permanent.keys()) & stations
+    available_stations = stations - permanently_taken
+    latest_visit: dict[Coord, int] = {station: -1 for station in available_stations}
+
+    for time, coords in reservations.vertex.items():
+        for coord in coords:
+            if coord in latest_visit and time > latest_visit[coord]:
+                latest_visit[coord] = time
+
+    available_after = {station: latest_time + 1 for station, latest_time in latest_visit.items()}
+    return available_stations, available_after
+
+
+def build_agent_plans(
+    warehouse: WarehouseMap,
+    agent_count: int,
+    tasks: list[Task],
+    mode: str,
+    station_mode: str,
+) -> list[AgentPlan]:
     if mode == "Available":
-        tasks = assign_available_tasks(warehouse, agent_count, tasks)
+        tasks = assign_available_tasks(warehouse, agent_count, tasks, station_mode)
 
     for task in tasks:
         if task.agent_id < 0 or task.agent_id >= agent_count:
@@ -248,14 +403,24 @@ def build_agent_plans(warehouse: WarehouseMap, agent_count: int, tasks: list[Tas
         tasks_by_agent[task.agent_id].append(task)
 
     homes = assign_home_stations(warehouse, agent_count)
-    dedicated_stations = set(homes.values())
     colors = build_color_palette(agent_count)
     reservations = ReservationTable()
-    plans = []
+    reserve_initial_positions(reservations, homes, tasks_by_agent)
+    planning_order = list(range(agent_count))
+    if station_mode == "Set":
+        finish_estimates = estimate_finish_times(warehouse, tasks_by_agent, homes)
+        planning_order.sort(key=lambda agent_id: (finish_estimates[agent_id], agent_id))
 
-    for agent_id in range(agent_count):
+    plans_by_id = {}
+
+    for agent_id in planning_order:
         home = homes[agent_id]
-        blocked_cells = dedicated_stations - {home}
+        if station_mode == "Set":
+            blocked_cells = set()
+            return_goals = {home}
+        else:
+            blocked_cells = set()
+            return_goals = set(warehouse.stations)
         current = home
         current_time = 0
         path = [home]
@@ -263,9 +428,19 @@ def build_agent_plans(warehouse: WarehouseMap, agent_count: int, tasks: list[Tas
         completion_times = {}
         missed_deadlines = []
 
-        for task in tasks_by_agent[agent_id]:
+        agent_tasks = tasks_by_agent[agent_id]
+        if agent_tasks:
+            first_release = min(task.release_time for task in agent_tasks)
+            clear_home_reservation(reservations, home, first_release)
+        for task_index, task in enumerate(agent_tasks):
             if current_time < task.release_time:
-                path = wait_until_time(path, task.release_time)
+                path = wait_until_time(
+                    warehouse,
+                    reservations,
+                    path,
+                    task.release_time,
+                    blocked_cells=blocked_cells,
+                )
                 current = path[-1]
                 current_time = len(path) - 1
 
@@ -283,13 +458,20 @@ def build_agent_plans(warehouse: WarehouseMap, agent_count: int, tasks: list[Tas
             current_time = len(path) - 1
             pickup_times[task.task_id] = current_time
 
+            goal_available_after = None
+            if station_mode == "Available" and task_index == len(agent_tasks) - 1:
+                return_goals, goal_available_after = station_availability(reservations, return_goals)
+                if not return_goals:
+                    raise RuntimeError("No free station available for final return.")
+
             back_home = find_path(
                 warehouse,
                 reservations,
                 current,
                 current_time,
-                {home},
+                return_goals,
                 blocked_cells=blocked_cells,
+                goal_available_after=goal_available_after,
             )
             path = merge_segments(path, back_home)
             current = path[-1]
@@ -299,18 +481,16 @@ def build_agent_plans(warehouse: WarehouseMap, agent_count: int, tasks: list[Tas
                 missed_deadlines.append(task.task_id)
 
         reservations.reserve_path(path)
-        plans.append(
-            AgentPlan(
-                agent_id=agent_id,
-                color=colors[agent_id],
-                home=home,
-                home_index=warehouse.coord_to_index(home),
-                path=path,
-                tasks=tasks_by_agent[agent_id],
-                pickup_times=pickup_times,
-                completion_times=completion_times,
-                missed_deadlines=missed_deadlines,
-            )
+        plans_by_id[agent_id] = AgentPlan(
+            agent_id=agent_id,
+            color=colors[agent_id],
+            home=home,
+            home_index=warehouse.coord_to_index(home),
+            path=path,
+            tasks=tasks_by_agent[agent_id],
+            pickup_times=pickup_times,
+            completion_times=completion_times,
+            missed_deadlines=missed_deadlines,
         )
 
-    return plans
+    return [plans_by_id[agent_id] for agent_id in range(agent_count)]

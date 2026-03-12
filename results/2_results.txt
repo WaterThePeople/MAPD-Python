@@ -1,0 +1,130 @@
+Scenario suite: 2
+
+== 2_set_set ==
+[done] Generated GIF: gifs\2_set_set.gif
+[done] Makespan: 258 steps
+
+Agent 0: station 62, path length 210, tasks [1@66[t=0,d=70], 21@198[t=32,d=102], 41@342[t=68,d=138], 61@114[t=105,d=175], 81@318[t=143,d=213]]
+Agent 1: station 63, path length 230, tasks [2@69[t=1,d=71], 22@201[t=34,d=104], 42@345[t=70,d=140], 62@117[t=107,d=177,late=3], 82@321[t=144,d=214,late=16]]
+Agent 2: station 92, path length 201, tasks [3@72[t=3,d=73], 23@204[t=35,d=105], 43@348[t=72,d=142], 63@186[t=108,d=178], 83@324[t=145,d=215]]
+Agent 3: station 93, path length 230, tasks [4@75[t=4,d=74], 24@207[t=37,d=107], 44@351[t=74,d=144,late=2], 64@189[t=110,d=180], 84@327[t=146,d=216,late=14]]
+Agent 4: station 122, path length 178, tasks [5@78[t=6,d=76], 25@216[t=39,d=109], 45@354[t=76,d=146], 65@192[t=112,d=182], 85@336[t=147,d=217]]
+Agent 5: station 123, path length 204, tasks [6@81[t=7,d=77], 26@219[t=41,d=111], 46@357[t=78,d=148], 66@195[t=114,d=184], 86@339[t=148,d=218]]
+Agent 6: station 152, path length 184, tasks [7@84[t=9,d=79], 27@222[t=42,d=112], 47@66[t=79,d=149], 67@198[t=116,d=186], 87@342[t=149,d=219]]
+Agent 7: station 153, path length 195, tasks [8@87[t=10,d=80], 28@225[t=44,d=114], 48@69[t=81,d=151], 68@201[t=118,d=188], 88@345[t=149,d=219]]
+Agent 8: station 182, path length 214, tasks [9@96[t=12,d=82], 29@228[t=46,d=116], 49@72[t=83,d=153], 69@204[t=120,d=190], 89@348[t=149,d=219]]
+Agent 9: station 183, path length 229, tasks [10@99[t=13,d=83], 30@231[t=48,d=118], 50@75[t=84,d=154], 70@207[t=122,d=192], 90@351[t=149,d=219,late=10]]
+Agent 10: station 212, path length 203, tasks [11@102[t=15,d=85], 31@306[t=50,d=120], 51@78[t=86,d=156], 71@216[t=124,d=194], 91@354[t=150,d=220]]
+Agent 11: station 213, path length 218, tasks [12@105[t=16,d=86], 32@309[t=52,d=122], 52@81[t=88,d=158], 72@219[t=126,d=196], 92@357[t=150,d=220]]
+Agent 12: station 242, path length 186, tasks [13@108[t=18,d=88], 33@312[t=54,d=124], 53@84[t=90,d=160], 73@222[t=128,d=198], 93@66[t=150,d=220]]
+Agent 13: station 243, path length 212, tasks [14@111[t=20,d=90], 34@315[t=56,d=126], 54@87[t=92,d=162], 74@225[t=130,d=200], 94@69[t=150,d=220]]
+Agent 14: station 272, path length 204, tasks [15@114[t=22,d=92], 35@318[t=57,d=127], 55@96[t=94,d=164], 75@228[t=132,d=202], 95@72[t=150,d=220]]
+Agent 15: station 273, path length 229, tasks [16@117[t=23,d=93], 36@321[t=59,d=129], 56@99[t=96,d=166], 76@231[t=134,d=204], 96@75[t=150,d=220,late=9]]
+Agent 16: station 302, path length 196, tasks [17@186[t=25,d=95], 37@324[t=61,d=131], 57@102[t=98,d=168], 77@306[t=136,d=206], 97@78[t=150,d=220]]
+Agent 17: station 303, path length 229, tasks [18@189[t=27,d=97], 38@327[t=63,d=133], 58@105[t=100,d=170], 78@309[t=138,d=208], 98@81[t=150,d=220,late=9]]
+Agent 18: station 332, path length 245, tasks [19@192[t=29,d=99], 39@336[t=65,d=135], 59@108[t=102,d=172], 79@312[t=140,d=210], 99@84[t=150,d=220,late=25]]
+Agent 19: station 333, path length 258, tasks [20@195[t=30,d=100], 40@339[t=66,d=136], 60@111[t=103,d=173], 80@315[t=142,d=212], 100@87[t=150,d=220,late=38]]
+
+[warn] Missed deadlines:
+  agent 1, task 62
+  agent 1, task 82
+  agent 3, task 44
+  agent 3, task 84
+  agent 9, task 90
+  agent 15, task 96
+  agent 17, task 98
+  agent 18, task 99
+  agent 19, task 100
+
+== 2_set_available ==
+[done] Generated GIF: gifs\2_set_available.gif
+[done] Makespan: 250 steps
+
+Agent 0: start station 62, path length 189, tasks [1@66[t=0,d=70], 21@198[t=32,d=102], 41@342[t=68,d=138], 61@114[t=105,d=175], 81@318[t=143,d=213]]
+Agent 1: start station 63, path length 201, tasks [2@69[t=1,d=71], 22@201[t=34,d=104], 42@345[t=70,d=140], 62@117[t=107,d=177], 82@321[t=144,d=214]]
+Agent 2: start station 92, path length 192, tasks [3@72[t=3,d=73], 23@204[t=35,d=105], 43@348[t=72,d=142], 63@186[t=108,d=178], 83@324[t=145,d=215]]
+Agent 3: start station 93, path length 203, tasks [4@75[t=4,d=74], 24@207[t=37,d=107], 44@351[t=74,d=144], 64@189[t=110,d=180], 84@327[t=146,d=216]]
+Agent 4: start station 122, path length 158, tasks [5@78[t=6,d=76], 25@216[t=39,d=109], 45@354[t=76,d=146], 65@192[t=112,d=182], 85@336[t=147,d=217]]
+Agent 5: start station 123, path length 182, tasks [6@81[t=7,d=77], 26@219[t=41,d=111], 46@357[t=78,d=148], 66@195[t=114,d=184], 86@339[t=148,d=218]]
+Agent 6: start station 152, path length 181, tasks [7@84[t=9,d=79], 27@222[t=42,d=112], 47@66[t=79,d=149], 67@198[t=116,d=186], 87@342[t=149,d=219]]
+Agent 7: start station 153, path length 192, tasks [8@87[t=10,d=80], 28@225[t=44,d=114], 48@69[t=81,d=151], 68@201[t=118,d=188], 88@345[t=149,d=219]]
+Agent 8: start station 182, path length 201, tasks [9@96[t=12,d=82], 29@228[t=46,d=116], 49@72[t=83,d=153], 69@204[t=120,d=190], 89@348[t=149,d=219]]
+Agent 9: start station 183, path length 224, tasks [10@99[t=13,d=83], 30@231[t=48,d=118], 50@75[t=84,d=154], 70@207[t=122,d=192], 90@351[t=149,d=219,late=5]]
+Agent 10: start station 212, path length 201, tasks [11@102[t=15,d=85], 31@306[t=50,d=120], 51@78[t=86,d=156], 71@216[t=124,d=194], 91@354[t=150,d=220]]
+Agent 11: start station 213, path length 217, tasks [12@105[t=16,d=86], 32@309[t=52,d=122], 52@81[t=88,d=158], 72@219[t=126,d=196], 92@357[t=150,d=220]]
+Agent 12: start station 242, path length 183, tasks [13@108[t=18,d=88], 33@312[t=54,d=124], 53@84[t=90,d=160], 73@222[t=128,d=198], 93@66[t=150,d=220]]
+Agent 13: start station 243, path length 208, tasks [14@111[t=20,d=90], 34@315[t=56,d=126], 54@87[t=92,d=162], 74@225[t=130,d=200], 94@69[t=150,d=220]]
+Agent 14: start station 272, path length 190, tasks [15@114[t=22,d=92], 35@318[t=57,d=127], 55@96[t=94,d=164], 75@228[t=132,d=202], 95@72[t=150,d=220]]
+Agent 15: start station 273, path length 226, tasks [16@117[t=23,d=93], 36@321[t=59,d=129], 56@99[t=96,d=166], 76@231[t=134,d=204], 96@75[t=150,d=220,late=6]]
+Agent 16: start station 302, path length 190, tasks [17@186[t=25,d=95], 37@324[t=61,d=131], 57@102[t=98,d=168], 77@306[t=136,d=206], 97@78[t=150,d=220]]
+Agent 17: start station 303, path length 221, tasks [18@189[t=27,d=97], 38@327[t=63,d=133], 58@105[t=100,d=170], 78@309[t=138,d=208], 98@81[t=150,d=220,late=1]]
+Agent 18: start station 332, path length 227, tasks [19@192[t=29,d=99], 39@336[t=65,d=135], 59@108[t=102,d=172], 79@312[t=140,d=210], 99@84[t=150,d=220,late=7]]
+Agent 19: start station 333, path length 250, tasks [20@195[t=30,d=100], 40@339[t=66,d=136], 60@111[t=103,d=173], 80@315[t=142,d=212], 100@87[t=150,d=220,late=30]]
+
+[warn] Missed deadlines:
+  agent 9, task 90
+  agent 15, task 96
+  agent 17, task 98
+  agent 18, task 99
+  agent 19, task 100
+
+== 2_available_set ==
+[done] Generated GIF: gifs\2_available_set.gif
+[done] Makespan: 242 steps
+
+Agent 0: station 62, path length 215, tasks [2@69[t=1,d=71], 13@108[t=18,d=88], 48@69[t=81,d=151], 57@102[t=98,d=168], 69@204[t=120,d=190], 97@78[t=150,d=220]]
+Agent 1: station 63, path length 195, tasks [1@66[t=0,d=70], 3@72[t=3,d=73], 15@114[t=22,d=92], 47@66[t=79,d=149], 49@72[t=83,d=153], 58@105[t=100,d=170], 89@348[t=149,d=219]]
+Agent 2: station 92, path length 220, tasks [6@81[t=7,d=77], 52@81[t=88,d=158], 92@357[t=150,d=220]]
+Agent 3: station 93, path length 240, tasks [4@75[t=4,d=74], 20@195[t=30,d=100], 50@75[t=84,d=154], 61@114[t=105,d=175], 93@66[t=150,d=220], 94@69[t=150,d=220], 99@84[t=150,d=220,late=20]]
+Agent 4: station 122, path length 242, tasks [7@84[t=9,d=79], 53@84[t=90,d=160], 86@339[t=148,d=218], 100@87[t=150,d=220,late=22]]
+Agent 5: station 123, path length 205, tasks [5@78[t=6,d=76], 22@201[t=34,d=104], 51@78[t=86,d=156], 65@192[t=112,d=182], 84@327[t=146,d=216]]
+Agent 6: station 152, path length 192, tasks [9@96[t=12,d=82], 14@111[t=20,d=90], 38@327[t=63,d=133], 68@201[t=118,d=188], 95@72[t=150,d=220]]
+Agent 7: station 153, path length 201, tasks [8@87[t=10,d=80], 40@339[t=66,d=136], 54@87[t=92,d=162], 85@336[t=147,d=217], 96@75[t=150,d=220]]
+Agent 8: station 182, path length 196, tasks [11@102[t=15,d=85], 23@204[t=35,d=105], 56@99[t=96,d=166], 64@189[t=110,d=180], 73@222[t=128,d=198], 88@345[t=149,d=219]]
+Agent 9: station 183, path length 180, tasks [10@99[t=13,d=83], 17@186[t=25,d=95], 19@192[t=29,d=99], 35@318[t=57,d=127], 55@96[t=94,d=164], 59@108[t=102,d=172], 76@231[t=134,d=204]]
+Agent 10: station 212, path length 222, tasks [16@117[t=23,d=93], 46@357[t=78,d=148], 78@309[t=138,d=208], 91@354[t=150,d=220,late=2]]
+Agent 11: station 213, path length 204, tasks [12@105[t=16,d=86], 28@225[t=44,d=114], 42@345[t=70,d=140], 60@111[t=103,d=173], 82@321[t=144,d=214]]
+Agent 12: station 242, path length 174, tasks [21@198[t=32,d=102], 37@324[t=61,d=131], 66@195[t=114,d=184], 80@315[t=142,d=212]]
+Agent 13: station 243, path length 217, tasks [18@189[t=27,d=97], 26@219[t=41,d=111], 33@312[t=54,d=124], 43@348[t=72,d=142], 63@186[t=108,d=178], 67@198[t=116,d=186], 83@324[t=145,d=215,late=2]]
+Agent 14: station 272, path length 180, tasks [25@216[t=39,d=109], 30@231[t=48,d=118], 70@207[t=122,d=192]]
+Agent 15: station 273, path length 220, tasks [24@207[t=37,d=107], 62@117[t=107,d=177], 98@81[t=150,d=220]]
+Agent 16: station 302, path length 190, tasks [29@228[t=46,d=116], 45@354[t=76,d=146], 74@225[t=130,d=200], 87@342[t=149,d=219]]
+Agent 17: station 303, path length 168, tasks [27@222[t=42,d=112], 36@321[t=59,d=129], 71@216[t=124,d=194], 75@228[t=132,d=202]]
+Agent 18: station 332, path length 180, tasks [32@309[t=52,d=122], 39@336[t=65,d=135], 41@342[t=68,d=138], 77@306[t=136,d=206], 81@318[t=143,d=213]]
+Agent 19: station 333, path length 214, tasks [31@306[t=50,d=120], 34@315[t=56,d=126], 44@351[t=74,d=144], 72@219[t=126,d=196], 79@312[t=140,d=210], 90@351[t=149,d=219]]
+
+[warn] Missed deadlines:
+  agent 3, task 99
+  agent 4, task 100
+  agent 10, task 91
+  agent 13, task 83
+
+== 2_available_available ==
+[done] Generated GIF: gifs\2_available_available.gif
+[done] Makespan: 241 steps
+
+Agent 0: start station 62, path length 194, tasks [2@69[t=1,d=71], 12@105[t=16,d=86], 48@69[t=81,d=151], 55@96[t=94,d=164], 58@105[t=100,d=170], 90@351[t=149,d=219]]
+Agent 1: start station 63, path length 184, tasks [1@66[t=0,d=70], 3@72[t=3,d=73], 15@114[t=22,d=92], 47@66[t=79,d=149], 49@72[t=83,d=153], 59@108[t=102,d=172], 88@345[t=149,d=219]]
+Agent 2: start station 92, path length 184, tasks [6@81[t=7,d=77], 50@75[t=84,d=154], 64@189[t=110,d=180], 89@348[t=149,d=219]]
+Agent 3: start station 93, path length 177, tasks [4@75[t=4,d=74], 20@195[t=30,d=100], 43@348[t=72,d=142], 62@117[t=107,d=177], 94@69[t=150,d=220]]
+Agent 4: start station 122, path length 179, tasks [7@84[t=9,d=79], 52@81[t=88,d=158], 87@342[t=149,d=219]]
+Agent 5: start station 123, path length 197, tasks [5@78[t=6,d=76], 23@204[t=35,d=105], 51@78[t=86,d=156], 68@201[t=118,d=188], 93@66[t=150,d=220], 96@75[t=150,d=220]]
+Agent 6: start station 152, path length 212, tasks [9@96[t=12,d=82], 13@108[t=18,d=88], 37@324[t=61,d=131], 61@114[t=105,d=175], 91@354[t=150,d=220]]
+Agent 7: start station 153, path length 222, tasks [8@87[t=10,d=80], 39@336[t=65,d=135], 53@84[t=90,d=160], 78@309[t=138,d=208], 92@357[t=150,d=220,late=2]]
+Agent 8: start station 182, path length 209, tasks [11@102[t=15,d=85], 22@201[t=34,d=104], 44@351[t=74,d=144], 69@204[t=120,d=190], 97@78[t=150,d=220]]
+Agent 9: start station 183, path length 205, tasks [10@99[t=13,d=83], 17@186[t=25,d=95], 19@192[t=29,d=99], 32@309[t=52,d=122], 40@339[t=66,d=136], 54@87[t=92,d=162], 83@324[t=145,d=215]]
+Agent 10: start station 212, path length 190, tasks [16@117[t=23,d=93], 45@354[t=76,d=146], 71@216[t=124,d=194], 74@225[t=130,d=200], 95@72[t=150,d=220]]
+Agent 11: start station 213, path length 241, tasks [14@111[t=20,d=90], 35@318[t=57,d=127], 56@99[t=96,d=166], 63@186[t=108,d=178], 66@195[t=114,d=184], 80@315[t=142,d=212], 100@87[t=150,d=220,late=21]]
+Agent 12: start station 242, path length 209, tasks [21@198[t=32,d=102], 38@327[t=63,d=133], 67@198[t=116,d=186], 84@327[t=146,d=216]]
+Agent 13: start station 243, path length 193, tasks [18@189[t=27,d=97], 26@219[t=41,d=111], 33@312[t=54,d=124], 42@345[t=70,d=140], 60@111[t=103,d=173], 81@318[t=143,d=213]]
+Agent 14: start station 272, path length 221, tasks [25@216[t=39,d=109], 29@228[t=46,d=116], 46@357[t=78,d=148], 75@228[t=132,d=202], 99@84[t=150,d=220,late=1]]
+Agent 15: start station 273, path length 181, tasks [24@207[t=37,d=107], 57@102[t=98,d=168], 70@207[t=122,d=192]]
+Agent 16: start station 302, path length 213, tasks [28@225[t=44,d=114], 41@342[t=68,d=138], 72@219[t=126,d=196], 79@312[t=140,d=210], 98@81[t=150,d=220]]
+Agent 17: start station 303, path length 182, tasks [27@222[t=42,d=112], 36@321[t=59,d=129], 65@192[t=112,d=182], 76@231[t=134,d=204]]
+Agent 18: start station 332, path length 183, tasks [31@306[t=50,d=120], 34@315[t=56,d=126], 77@306[t=136,d=206], 82@321[t=144,d=214]]
+Agent 19: start station 333, path length 175, tasks [30@231[t=48,d=118], 73@222[t=128,d=198], 85@336[t=147,d=217], 86@339[t=148,d=218]]
+
+[warn] Missed deadlines:
+  agent 7, task 92
+  agent 11, task 100
+  agent 14, task 99
