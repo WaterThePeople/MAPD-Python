@@ -9,7 +9,11 @@ from mapd.renderer import render_frames
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Proof-of-concept MAPD simulator with GIF export.")
     parser.add_argument("--layout", default="maps/layout.txt", help="Path to the warehouse layout file.")
-    parser.add_argument("--scenario", default="maps/scenarios/0_set_set.txt", help="Path to the scenario file.")
+    parser.add_argument(
+        "--scenario",
+        default="maps/scenarios/0/0_set_set_none.txt",
+        help="Path to the scenario file.",
+    )
     parser.add_argument(
         "--scenario-suite",
         help=(
@@ -22,12 +26,22 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--results-dir", default="results", help="Directory for scenario suite results file.")
     parser.add_argument("--cell-size", type=int, default=48, help="Rendered size of a single cell in pixels.")
     parser.add_argument("--frame-duration", type=int, default=250, help="GIF frame duration in milliseconds.")
+    parser.add_argument("--no-gif", action="store_true", help="Skip GIF rendering and only compute results.")
     return parser.parse_args()
 
 
-def summary_lines(plans, makespan: int, output_path: Path, station_mode: str) -> list[str]:
+def summary_lines(
+    plans,
+    makespan: int,
+    output_path: Path | None,
+    station_mode: str,
+    gif_rendered: bool,
+) -> list[str]:
     lines = []
-    lines.append(f"[done] Generated GIF: {output_path}")
+    if gif_rendered:
+        lines.append(f"[done] Generated GIF: {output_path}")
+    else:
+        lines.append("[done] GIF rendering skipped")
     lines.append(f"[done] Makespan: {makespan} steps")
     lines.append("")
     station_label = "station" if station_mode == "Set" else "start station"
@@ -62,53 +76,54 @@ def summary_lines(plans, makespan: int, output_path: Path, station_mode: str) ->
     return lines
 
 
-def print_summary(plans, makespan: int, output_path: Path, station_mode: str) -> None:
-    for line in summary_lines(plans, makespan, output_path, station_mode):
+def print_summary(plans, makespan: int, output_path: Path | None, station_mode: str, gif_rendered: bool) -> None:
+    for line in summary_lines(plans, makespan, output_path, station_mode, gif_rendered):
         print(line)
 
 
 def derive_suite_paths(suite_arg: str) -> tuple[str, list[Path]]:
-    suffixes = ["_set_set", "_set_available", "_available_set", "_available_available"]
     suite_path = Path(suite_arg)
-
-    if suite_path.suffix:
-        stem = suite_path.stem
-        base = stem
-        for suffix in suffixes:
-            if stem.endswith(suffix):
-                base = stem[: -len(suffix)]
-                break
-        scenarios_dir = suite_path.parent
-    elif suite_path.parent != Path("."):
-        scenarios_dir = suite_path.parent
-        base = suite_path.name
+    if suite_path.is_dir():
+        scenarios_dir = suite_path
     else:
-        scenarios_dir = Path("maps/scenarios")
-        base = suite_arg
+        candidate_dir = Path("maps/scenarios") / suite_arg
+        if candidate_dir.is_dir():
+            scenarios_dir = candidate_dir
+        elif suite_path.is_file():
+            scenarios_dir = suite_path.parent
+        else:
+            raise FileNotFoundError(f"Suite directory not found: {suite_arg}")
 
-    paths = [scenarios_dir / f"{base}{suffix}.txt" for suffix in suffixes]
-    return base, paths
+    suite_name = scenarios_dir.name
+    paths = sorted(scenarios_dir.glob("*.txt"))
+    return suite_name, paths
 
 
 def run_simulation(
     warehouse,
     scenario_path: Path,
-    output_path: Path,
+    output_path: Path | None,
     cell_size: int,
     frame_duration: int,
     progress: bool,
-) -> tuple[int, list, str, str]:
-    agent_count, tasks, mode, station_mode = load_scenario(scenario_path)
-    plans = build_agent_plans(warehouse, agent_count, tasks, mode, station_mode)
-    makespan = render_frames(
-        warehouse=warehouse,
-        plans=plans,
-        output_path=output_path,
-        cell_size=cell_size,
-        frame_duration_ms=frame_duration,
-        progress=progress,
-    )
-    return makespan, plans, mode, station_mode
+    render_gif: bool,
+) -> tuple[int, list, str, str, str]:
+    agent_count, tasks, mode, station_mode, strategy = load_scenario(scenario_path)
+    plans = build_agent_plans(warehouse, agent_count, tasks, mode, station_mode, strategy)
+    if render_gif:
+        if output_path is None:
+            raise ValueError("Output path must be provided when rendering GIFs.")
+        makespan = render_frames(
+            warehouse=warehouse,
+            plans=plans,
+            output_path=output_path,
+            cell_size=cell_size,
+            frame_duration_ms=frame_duration,
+            progress=progress,
+        )
+    else:
+        makespan = max((len(plan.path) for plan in plans), default=1) - 1
+    return makespan, plans, mode, station_mode, strategy
 
 
 def write_suite_results(
@@ -144,17 +159,19 @@ def main() -> None:
         output_dir = Path(args.suite_output_dir)
         for scenario_path in scenario_paths:
             scenario_label = scenario_path.stem
-            output_path = output_dir / f"{scenario_label}.gif"
+            output_path = None if args.no_gif else output_dir / f"{scenario_label}.gif"
             print(f"[2/4] Loading scenario from {scenario_path}")
-            makespan, plans, mode, station_mode = run_simulation(
+            makespan, plans, mode, station_mode, strategy = run_simulation(
                 warehouse,
                 scenario_path,
                 output_path,
                 args.cell_size,
                 args.frame_duration,
                 progress=True,
+                render_gif=not args.no_gif,
             )
-            summary = summary_lines(plans, makespan, output_path, station_mode)
+            summary = summary_lines(plans, makespan, output_path, station_mode, not args.no_gif)
+            summary.insert(0, f"[done] Strategy: {strategy}")
             sections.append((scenario_label, summary))
 
         results_path = Path(args.results_dir) / f"{suite_name}_results.txt"
@@ -163,27 +180,33 @@ def main() -> None:
         return
 
     print(f"[2/4] Loading scenario from {args.scenario}")
-    agent_count, tasks, mode, station_mode = load_scenario(Path(args.scenario))
+    agent_count, tasks, mode, station_mode, strategy = load_scenario(Path(args.scenario))
     print(
         f"[2/4] Scenario loaded: {agent_count} agents, {len(tasks)} tasks, "
-        f"mode={mode}, station={station_mode}"
+        f"mode={mode}, station={station_mode}, strategy={strategy}"
     )
 
     print("[3/4] Planning collision-free routes")
-    plans = build_agent_plans(warehouse, agent_count, tasks, mode, station_mode)
+    plans = build_agent_plans(warehouse, agent_count, tasks, mode, station_mode, strategy)
     print("[3/4] Route planning finished")
 
-    print(f"[4/4] Rendering GIF to {args.output}")
-    makespan = render_frames(
-        warehouse=warehouse,
-        plans=plans,
-        output_path=Path(args.output),
-        cell_size=args.cell_size,
-        frame_duration_ms=args.frame_duration,
-        progress=True,
-    )
+    if args.no_gif:
+        print("[4/4] Skipping GIF rendering")
+        makespan = max((len(plan.path) for plan in plans), default=1) - 1
+        output_path = None
+    else:
+        print(f"[4/4] Rendering GIF to {args.output}")
+        output_path = Path(args.output)
+        makespan = render_frames(
+            warehouse=warehouse,
+            plans=plans,
+            output_path=output_path,
+            cell_size=args.cell_size,
+            frame_duration_ms=args.frame_duration,
+            progress=True,
+        )
 
-    print_summary(plans, makespan, Path(args.output), station_mode)
+    print_summary(plans, makespan, output_path, station_mode, not args.no_gif)
 
 
 if __name__ == "__main__":

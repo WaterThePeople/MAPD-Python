@@ -3,6 +3,7 @@ from collections import defaultdict
 from collections import deque
 
 from mapd.models import AgentPlan, Coord, Task
+from mapd.strategy import get_strategy
 from mapd.warehouse import WarehouseMap
 
 
@@ -230,7 +231,12 @@ def assign_available_tasks(
     agent_count: int,
     tasks: list[Task],
     station_mode: str,
+    strategy: str,
 ) -> list[Task]:
+    strategy_impl = get_strategy(strategy, agent_count)
+    if strategy_impl.name == "None":
+        raise ValueError("Strategy 'None' is only valid when Mode is Set.")
+
     homes = assign_home_stations(warehouse, agent_count)
     availability = {}
     distance_cache = {}
@@ -243,71 +249,42 @@ def assign_available_tasks(
 
     ordered_tasks = sorted(tasks, key=lambda task: (task.release_time, task.task_id))
 
-    for task in ordered_tasks:
-        best_agent_id = None
-        best_finish_time = None
-        best_lateness = None
+    def travel_times(agent_id: int, task: Task) -> tuple[int, int, int, int]:
+        cache_key = (agent_id, task.location_index)
+        if cache_key not in distance_cache:
+            pickup_goals = warehouse.pickup_positions(task.location_index)
+            distance_cache[cache_key] = shortest_distance(warehouse, homes[agent_id], pickup_goals, set())
 
-        for agent_id in range(agent_count):
-            blocked_cells = set()
-            cache_key = (agent_id, task.location_index)
-
-            if cache_key not in distance_cache:
+        distance_to_pickup = distance_cache[cache_key]
+        if station_mode == "Available":
+            if task.location_index not in return_cache:
                 pickup_goals = warehouse.pickup_positions(task.location_index)
-                distance_cache[cache_key] = shortest_distance(
-                    warehouse,
-                    homes[agent_id],
-                    pickup_goals,
-                    blocked_cells,
+                return_cache[task.location_index] = min(
+                    shortest_distance(warehouse, pickup, station_goals, set()) for pickup in pickup_goals
                 )
+            return_distance = return_cache[task.location_index]
+        else:
+            return_distance = distance_to_pickup
 
-            distance_to_pickup = distance_cache[cache_key]
-            if station_mode == "Available":
-                if task.location_index not in return_cache:
-                    pickup_goals = warehouse.pickup_positions(task.location_index)
-                    return_cache[task.location_index] = min(
-                        shortest_distance(warehouse, pickup, station_goals, set()) for pickup in pickup_goals
-                    )
-                return_distance = return_cache[task.location_index]
-            else:
-                return_distance = distance_to_pickup
+        start_time = max(availability[agent_id], task.release_time)
+        arrival_time = start_time + distance_to_pickup
+        finish_time = start_time + distance_to_pickup + return_distance
+        return start_time, arrival_time, finish_time, distance_to_pickup
 
-            travel_time = distance_to_pickup + return_distance
-            start_time = max(availability[agent_id], task.release_time)
-            finish_time = start_time + travel_time
-            lateness = 0
-            if task.deadline is not None and finish_time > task.deadline:
-                lateness = finish_time - task.deadline
+    for task in ordered_tasks:
+        agent_id = strategy_impl.select_agent(task, agent_count, availability, travel_times)
 
-            if best_finish_time is None:
-                best_agent_id = agent_id
-                best_finish_time = finish_time
-                best_lateness = lateness
-            else:
-                if lateness < best_lateness:
-                    best_agent_id = agent_id
-                    best_finish_time = finish_time
-                    best_lateness = lateness
-                elif lateness == best_lateness:
-                    if finish_time < best_finish_time:
-                        best_agent_id = agent_id
-                        best_finish_time = finish_time
-                        best_lateness = lateness
-                    elif finish_time == best_finish_time and agent_id < best_agent_id:
-                        best_agent_id = agent_id
-                        best_finish_time = finish_time
-                        best_lateness = lateness
-
+        start_time, _, finish_time, _ = travel_times(agent_id, task)
         assigned_tasks.append(
             Task(
                 task_id=task.task_id,
-                agent_id=best_agent_id,
+                agent_id=agent_id,
                 location_index=task.location_index,
                 release_time=task.release_time,
                 deadline=task.deadline,
             )
         )
-        availability[best_agent_id] = best_finish_time
+        availability[agent_id] = finish_time
 
     return assigned_tasks
 
@@ -387,9 +364,10 @@ def build_agent_plans(
     tasks: list[Task],
     mode: str,
     station_mode: str,
+    strategy: str,
 ) -> list[AgentPlan]:
     if mode == "Available":
-        tasks = assign_available_tasks(warehouse, agent_count, tasks, station_mode)
+        tasks = assign_available_tasks(warehouse, agent_count, tasks, station_mode, strategy)
 
     for task in tasks:
         if task.agent_id < 0 or task.agent_id >= agent_count:
