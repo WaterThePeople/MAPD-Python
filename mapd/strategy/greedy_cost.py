@@ -2,8 +2,8 @@ from mapd.models import Task
 from mapd.strategy.base import TravelTimesFn
 
 
-class NearestStrategy:
-    name = "Nearest"
+class GreedyCostStrategy:
+    name = "GreedyCost"
 
     def select_agent(
         self,
@@ -15,8 +15,8 @@ class NearestStrategy:
         best_agent = None
         best_key = None
         for candidate in range(agent_count):
-            start_time, arrival_time, _, _ = travel_times(candidate, task)
-            key = (arrival_time, start_time, candidate)
+            start_time, arrival_time, finish_time, _ = travel_times(candidate, task)
+            key = (finish_time, arrival_time, start_time, candidate)
             if best_key is None or key < best_key:
                 best_key = key
                 best_agent = candidate

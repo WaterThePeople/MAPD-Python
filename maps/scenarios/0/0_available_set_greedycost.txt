@@ -1,8 +1,8 @@
-Agents: 5
+﻿Agents: 5
 Tasks: 10
 Mode: Available
 Station: Set
-Strategy: Nearest
+Strategy: GreedyCost
 
 Task Agent Location Time Deadline
 1 0 78 0 60

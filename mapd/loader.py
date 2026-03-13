@@ -24,7 +24,7 @@ def load_scenario(path: Path) -> tuple[int, list[Task], str, str, str]:
     if not agents_match or not tasks_match or not mode_match or not station_match or not strategy_match:
         raise ValueError(
             "Scenario file must contain 'Agents: N', 'Tasks: N', 'Mode: Set|Available', "
-            "'Station: Set|Available' and 'Strategy: FCFS|Nearest|Robin|None'."
+            "'Station: Set|Available' and 'Strategy: FCFS|GreedyCost|Robin|None'."
         )
 
     agent_count = int(agents_match.group(1))
@@ -40,7 +40,8 @@ def load_scenario(path: Path) -> tuple[int, list[Task], str, str, str]:
     strategy_raw = strategy_match.group(1).strip().lower()
     strategy_map = {
         "fcfs": "FCFS",
-        "nearest": "Nearest",
+        "greedy": "GreedyCost",
+        "greedycost": "GreedyCost",
         "robin": "Robin",
         "none": "None",
     }
