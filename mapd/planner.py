@@ -394,7 +394,7 @@ def build_agent_plans(
     for agent_id in planning_order:
         home = homes[agent_id]
         if station_mode == "Set":
-            blocked_cells = set()
+            blocked_cells = set(homes.values()) - {home}
             return_goals = {home}
         else:
             blocked_cells = set()

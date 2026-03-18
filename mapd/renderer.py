@@ -75,7 +75,15 @@ def progress_points(total_frames: int) -> set[int]:
     return points
 
 
-def build_task_maps(plans: list[AgentPlan]) -> tuple[dict[int, int], dict[int, int], dict[int, list]]:
+def clear_debug_frames(debug_frames_dir: Path) -> None:
+    debug_frames_dir.mkdir(parents=True, exist_ok=True)
+    for existing_frame in debug_frames_dir.glob("frame_*.png"):
+        existing_frame.unlink()
+
+
+def build_task_maps(
+    plans: list[AgentPlan],
+) -> tuple[dict[int, int], dict[int, int], dict[int, int | None], dict[int, list]]:
     package_pickups = {}
     package_release_times = {}
     package_deadlines = {}
@@ -105,18 +113,26 @@ def carried_task_id(plan: AgentPlan, time: int) -> str | None:
 def render_frames(
     warehouse: WarehouseMap,
     plans: list[AgentPlan],
-    output_path: Path,
+    output_path: Path | None,
     cell_size: int,
     frame_duration_ms: int,
     progress: bool = False,
+    debug_frames_dir: Path | None = None,
 ) -> int:
+    if output_path is None and debug_frames_dir is None:
+        raise ValueError("render_frames requires an output GIF path or a debug frames directory.")
+
     font = ImageFont.load_default()
     max_time = max(len(plan.path) for plan in plans) - 1 if plans else 0
     total_frames = max_time + 1
     progress_marks = progress_points(total_frames)
     package_pickups, package_release_times, package_deadlines, tasks_by_location = build_task_maps(plans)
+    frame_number_width = max(4, len(str(total_frames - 1)))
 
-    frames = []
+    if debug_frames_dir is not None:
+        clear_debug_frames(debug_frames_dir)
+
+    frames = [] if output_path is not None else None
     image_width = warehouse.width * cell_size
     image_height = warehouse.height * cell_size
     header_height = max(36, cell_size)
@@ -195,19 +211,28 @@ def render_frames(
             label = carried_task_id(plan, time)
             draw_agent(draw, left, top, cell_size, plan.color, label, font)
 
-        frames.append(image)
+        if debug_frames_dir is not None:
+            frame_path = debug_frames_dir / f"frame_{time:0{frame_number_width}d}.png"
+            image.save(frame_path)
 
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    frames[0].save(
-        output_path,
-        save_all=True,
-        append_images=frames[1:],
-        duration=frame_duration_ms,
-        loop=0,
-        optimize=False,
-    )
+        if frames is not None:
+            frames.append(image)
+
+    if output_path is not None:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        frames[0].save(
+            output_path,
+            save_all=True,
+            append_images=frames[1:],
+            duration=frame_duration_ms,
+            loop=0,
+            optimize=False,
+        )
 
     if progress:
-        print(f"  [render] saved {total_frames} frames")
+        if output_path is not None:
+            print(f"  [render] saved {total_frames} GIF frames")
+        if debug_frames_dir is not None:
+            print(f"  [render] exported {total_frames} debug frames to {debug_frames_dir}")
 
     return max_time

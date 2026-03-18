@@ -17,7 +17,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--scenario-suite",
         help=(
-            "Run all 4 variants for a scenario base name (e.g. '2' or 'maps/scenarios/2'). "
+            "Run all scenario variants for a scenario base name (e.g. '2' or 'maps/scenarios/2'). "
             "Overrides --scenario and --output."
         ),
     )
@@ -26,8 +26,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--results-dir", default="results", help="Directory for scenario suite results file.")
     parser.add_argument("--cell-size", type=int, default=48, help="Rendered size of a single cell in pixels.")
     parser.add_argument("--frame-duration", type=int, default=250, help="GIF frame duration in milliseconds.")
+    parser.add_argument(
+        "--debug-frames-dir",
+        help=(
+            "Export every rendered frame for a single scenario as PNG files in this directory. "
+            "Existing frame_*.png files are removed first."
+        ),
+    )
     parser.add_argument("--no-gif", action="store_true", help="Skip GIF rendering and only compute results.")
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.scenario_suite and args.debug_frames_dir:
+        parser.error("--debug-frames-dir can only be used with a single --scenario run.")
+    return args
 
 
 def summary_lines(
@@ -36,12 +46,15 @@ def summary_lines(
     output_path: Path | None,
     station_mode: str,
     gif_rendered: bool,
+    debug_frames_dir: Path | None = None,
 ) -> list[str]:
     lines = []
     if gif_rendered:
         lines.append(f"[done] Generated GIF: {output_path}")
     else:
         lines.append("[done] GIF rendering skipped")
+    if debug_frames_dir is not None:
+        lines.append(f"[done] Exported {makespan + 1} debug frames: {debug_frames_dir}")
     lines.append(f"[done] Makespan: {makespan} steps")
     lines.append("")
     station_label = "station" if station_mode == "Set" else "start station"
@@ -76,8 +89,15 @@ def summary_lines(
     return lines
 
 
-def print_summary(plans, makespan: int, output_path: Path | None, station_mode: str, gif_rendered: bool) -> None:
-    for line in summary_lines(plans, makespan, output_path, station_mode, gif_rendered):
+def print_summary(
+    plans,
+    makespan: int,
+    output_path: Path | None,
+    station_mode: str,
+    gif_rendered: bool,
+    debug_frames_dir: Path | None = None,
+) -> None:
+    for line in summary_lines(plans, makespan, output_path, station_mode, gif_rendered, debug_frames_dir):
         print(line)
 
 
@@ -107,19 +127,21 @@ def run_simulation(
     frame_duration: int,
     progress: bool,
     render_gif: bool,
+    debug_frames_dir: Path | None = None,
 ) -> tuple[int, list, str, str, str]:
     agent_count, tasks, mode, station_mode, strategy = load_scenario(scenario_path)
     plans = build_agent_plans(warehouse, agent_count, tasks, mode, station_mode, strategy)
-    if render_gif:
-        if output_path is None:
+    if render_gif or debug_frames_dir is not None:
+        if render_gif and output_path is None:
             raise ValueError("Output path must be provided when rendering GIFs.")
         makespan = render_frames(
             warehouse=warehouse,
             plans=plans,
-            output_path=output_path,
+            output_path=output_path if render_gif else None,
             cell_size=cell_size,
             frame_duration_ms=frame_duration,
             progress=progress,
+            debug_frames_dir=debug_frames_dir,
         )
     else:
         makespan = max((len(plan.path) for plan in plans), default=1) - 1
@@ -190,13 +212,18 @@ def main() -> None:
     plans = build_agent_plans(warehouse, agent_count, tasks, mode, station_mode, strategy)
     print("[3/4] Route planning finished")
 
-    if args.no_gif:
+    output_path = None if args.no_gif else Path(args.output)
+    debug_frames_dir = Path(args.debug_frames_dir) if args.debug_frames_dir else None
+    if args.no_gif and debug_frames_dir is None:
         print("[4/4] Skipping GIF rendering")
         makespan = max((len(plan.path) for plan in plans), default=1) - 1
-        output_path = None
     else:
-        print(f"[4/4] Rendering GIF to {args.output}")
-        output_path = Path(args.output)
+        if output_path is not None and debug_frames_dir is not None:
+            print(f"[4/4] Rendering GIF to {output_path} and exporting frames to {debug_frames_dir}")
+        elif output_path is not None:
+            print(f"[4/4] Rendering GIF to {output_path}")
+        else:
+            print(f"[4/4] Exporting frames to {debug_frames_dir}")
         makespan = render_frames(
             warehouse=warehouse,
             plans=plans,
@@ -204,9 +231,10 @@ def main() -> None:
             cell_size=args.cell_size,
             frame_duration_ms=args.frame_duration,
             progress=True,
+            debug_frames_dir=debug_frames_dir,
         )
 
-    print_summary(plans, makespan, output_path, station_mode, not args.no_gif)
+    print_summary(plans, makespan, output_path, station_mode, not args.no_gif, debug_frames_dir)
 
 
 if __name__ == "__main__":
