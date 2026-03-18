@@ -1,7 +1,8 @@
 import argparse
+import re
 from pathlib import Path
 
-from mapd.loader import load_layout, load_scenario
+from mapd.loader import layout_path, load_layout, load_scenario
 from mapd.planner import build_agent_plans
 from mapd.renderer import render_frames
 from mapd.results_workbook import (
@@ -17,10 +18,16 @@ from mapd.results_workbook import (
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Proof-of-concept MAPD simulator with GIF export.")
-    parser.add_argument("--layout", default="maps/layout.txt", help="Path to the warehouse layout file.")
+    parser.add_argument(
+        "--layout",
+        help=(
+            "Optional layout path or numeric layout id for a single scenario run. "
+            "If omitted, the scenario's Layout value is used."
+        ),
+    )
     parser.add_argument(
         "--scenario",
-        default="maps/scenarios/0/0_set_set_none.txt",
+        default="maps/scenarios/0/0_set_set_none_map0.txt",
         help="Path to the scenario file.",
     )
     parser.add_argument(
@@ -46,6 +53,8 @@ def parse_args() -> argparse.Namespace:
     args = parser.parse_args()
     if args.scenario_suite and args.debug_frames_dir:
         parser.error("--debug-frames-dir can only be used with a single --scenario run.")
+    if args.scenario_suite and args.layout:
+        parser.error("--layout cannot be used with --scenario-suite because each scenario selects its own layout.")
     return args
 
 
@@ -124,21 +133,43 @@ def derive_suite_paths(suite_arg: str) -> tuple[str, list[Path]]:
             raise FileNotFoundError(f"Suite directory not found: {suite_arg}")
 
     suite_name = scenarios_dir.name
-    paths = sorted(scenarios_dir.glob("*.txt"))
+    all_paths = sorted(scenarios_dir.glob("*.txt"))
+    mapped_paths = [path for path in all_paths if re.search(r"_map\d+\.txt$", path.name)]
+    paths = mapped_paths or all_paths
     return suite_name, paths
+
+
+def resolve_layout_reference(layout_arg: str | None, scenario_layout_id: int) -> tuple[int, Path]:
+    if layout_arg is None:
+        return scenario_layout_id, layout_path(scenario_layout_id)
+
+    if layout_arg.isdigit():
+        override_layout_id = int(layout_arg)
+        return override_layout_id, layout_path(override_layout_id)
+
+    override_path = Path(layout_arg)
+    if not override_path.exists():
+        raise FileNotFoundError(f"Layout override not found: {layout_arg}")
+
+    layout_id_match = re.search(r"(\d+)(?=\.txt$)", override_path.name)
+    layout_id = int(layout_id_match.group(1)) if layout_id_match else scenario_layout_id
+    return layout_id, override_path
 
 
 def run_simulation(
     warehouse,
-    scenario_path: Path,
+    agent_count: int,
+    tasks,
+    mode: str,
+    station_mode: str,
+    strategy: str,
     output_path: Path | None,
     cell_size: int,
     frame_duration: int,
     progress: bool,
     render_gif: bool,
     debug_frames_dir: Path | None = None,
-) -> tuple[int, list, str, str, str]:
-    agent_count, tasks, mode, station_mode, strategy = load_scenario(scenario_path)
+) -> tuple[int, list]:
     plans = build_agent_plans(warehouse, agent_count, tasks, mode, station_mode, strategy)
     if render_gif or debug_frames_dir is not None:
         if render_gif and output_path is None:
@@ -154,15 +185,11 @@ def run_simulation(
         )
     else:
         makespan = max((len(plan.path) for plan in plans), default=1) - 1
-    return makespan, plans, mode, station_mode, strategy
+    return makespan, plans
 
 
 def main() -> None:
     args = parse_args()
-
-    print(f"[1/4] Loading layout from {args.layout}")
-    warehouse = load_layout(Path(args.layout))
-    print(f"[1/4] Layout loaded: {warehouse.width}x{warehouse.height}")
 
     if args.scenario_suite:
         suite_name, scenario_paths = derive_suite_paths(args.scenario_suite)
@@ -178,9 +205,21 @@ def main() -> None:
             scenario_label = scenario_path.stem
             output_path = None if args.no_gif else output_dir / f"{scenario_label}.gif"
             print(f"[2/4] Loading scenario from {scenario_path}")
-            makespan, plans, mode, station_mode, strategy = run_simulation(
+            agent_count, tasks, mode, station_mode, strategy, scenario_layout_id = load_scenario(scenario_path)
+            resolved_layout_id, resolved_layout_path = resolve_layout_reference(None, scenario_layout_id)
+            warehouse = load_layout(resolved_layout_path)
+            print(
+                f"[2/4] Scenario loaded: {agent_count} agents, {len(tasks)} tasks, "
+                f"mode={mode}, station={station_mode}, strategy={strategy}, layout={resolved_layout_id}"
+            )
+            print(f"[2/4] Layout loaded from {resolved_layout_path}: {warehouse.width}x{warehouse.height}")
+            makespan, plans = run_simulation(
                 warehouse,
-                scenario_path,
+                agent_count,
+                tasks,
+                mode,
+                station_mode,
+                strategy,
                 output_path,
                 args.cell_size,
                 args.frame_duration,
@@ -188,9 +227,22 @@ def main() -> None:
                 render_gif=not args.no_gif,
             )
             assignment_type = assignment_type_label(mode, station_mode)
-            tasks_rows.extend(build_tasks_rows(suite_name, strategy, assignment_type, makespan, plans)[1:])
-            summary_rows.extend(build_summary_rows(suite_name, strategy, assignment_type, plans)[1:])
-            comparison_rows.append(build_comparison_row(suite_name, strategy, assignment_type, makespan, plans))
+            tasks_rows.extend(
+                build_tasks_rows(suite_name, resolved_layout_id, strategy, assignment_type, makespan, plans)[1:]
+            )
+            summary_rows.extend(
+                build_summary_rows(suite_name, resolved_layout_id, strategy, assignment_type, plans)[1:]
+            )
+            comparison_rows.append(
+                build_comparison_row(
+                    suite_name,
+                    resolved_layout_id,
+                    strategy,
+                    assignment_type,
+                    makespan,
+                    plans,
+                )
+            )
 
         results_path = Path(args.results_dir) / f"{suite_name}_results.xlsx"
         write_xlsx_workbook(
@@ -204,12 +256,18 @@ def main() -> None:
         print(f"[done] Wrote suite results: {results_path}")
         return
 
-    print(f"[2/4] Loading scenario from {args.scenario}")
-    agent_count, tasks, mode, station_mode, strategy = load_scenario(Path(args.scenario))
+    scenario_path = Path(args.scenario)
+    print(f"[1/4] Loading scenario from {scenario_path}")
+    agent_count, tasks, mode, station_mode, strategy, scenario_layout_id = load_scenario(scenario_path)
     print(
-        f"[2/4] Scenario loaded: {agent_count} agents, {len(tasks)} tasks, "
-        f"mode={mode}, station={station_mode}, strategy={strategy}"
+        f"[1/4] Scenario loaded: {agent_count} agents, {len(tasks)} tasks, "
+        f"mode={mode}, station={station_mode}, strategy={strategy}, layout={scenario_layout_id}"
     )
+
+    resolved_layout_id, resolved_layout_path = resolve_layout_reference(args.layout, scenario_layout_id)
+    print(f"[2/4] Loading layout from {resolved_layout_path}")
+    warehouse = load_layout(resolved_layout_path)
+    print(f"[2/4] Layout loaded: {warehouse.width}x{warehouse.height} (layout={resolved_layout_id})")
 
     print("[3/4] Planning collision-free routes")
     plans = build_agent_plans(warehouse, agent_count, tasks, mode, station_mode, strategy)

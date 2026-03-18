@@ -14,13 +14,29 @@ def load_layout(path: Path) -> WarehouseMap:
     return WarehouseMap(rows)
 
 
-def load_scenario(path: Path) -> tuple[int, list[Task], str, str, str]:
+def layout_path(layout_id: int, layouts_root: Path | None = None) -> Path:
+    root = Path("maps/layouts") if layouts_root is None else layouts_root
+    candidate = root / str(layout_id) / f"{layout_id}.txt"
+    if candidate.exists():
+        return candidate
+
+    layout_dir = root / str(layout_id)
+    if layout_dir.is_dir():
+        text_files = sorted(layout_dir.glob("*.txt"))
+        if len(text_files) == 1:
+            return text_files[0]
+
+    raise FileNotFoundError(f"Layout {layout_id} not found under {root}.")
+
+
+def load_scenario(path: Path) -> tuple[int, list[Task], str, str, str, int]:
     text = path.read_text(encoding="utf-8")
     agents_match = re.search(r"Agents:\s*(\d+)", text)
     tasks_match = re.search(r"Tasks:\s*(\d+)", text)
     mode_match = re.search(r"Mode:\s*(\w+)", text)
     station_match = re.search(r"Station:\s*(\w+)", text)
     strategy_match = re.search(r"Strategy:\s*(\w+)", text)
+    layout_match = re.search(r"Layout:\s*(\d+)", text)
     if not agents_match or not tasks_match or not mode_match or not station_match or not strategy_match:
         raise ValueError(
             "Scenario file must contain 'Agents: N', 'Tasks: N', 'Mode: Set|Available', "
@@ -48,6 +64,12 @@ def load_scenario(path: Path) -> tuple[int, list[Task], str, str, str]:
     if strategy_raw not in strategy_map:
         raise ValueError(f"Unsupported strategy: {strategy_match.group(1)}")
     strategy = strategy_map[strategy_raw]
+
+    if layout_match is not None:
+        layout_id = int(layout_match.group(1))
+    else:
+        filename_match = re.search(r"_map(\d+)(?=\.txt$)", path.name)
+        layout_id = int(filename_match.group(1)) if filename_match is not None else 0
 
     tasks: list[Task] = []
     for line in text.splitlines():
@@ -77,4 +99,4 @@ def load_scenario(path: Path) -> tuple[int, list[Task], str, str, str]:
     if len(tasks) != expected_task_count:
         raise ValueError(f"Scenario declares {expected_task_count} tasks but contains {len(tasks)}.")
 
-    return agent_count, tasks, mode, station_mode, strategy
+    return agent_count, tasks, mode, station_mode, strategy, layout_id

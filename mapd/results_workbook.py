@@ -10,6 +10,7 @@ from mapd.models import AgentPlan
 
 TASKS_HEADERS = [
     "scenario",
+    "layout",
     "strategy",
     "assignment_type",
     "agent_id",
@@ -25,6 +26,7 @@ TASKS_HEADERS = [
 
 SUMMARY_HEADERS = [
     "scenario",
+    "layout",
     "strategy",
     "assignment_type",
     "agent_id",
@@ -35,6 +37,7 @@ SUMMARY_HEADERS = [
 
 COMPARISON_HEADERS = [
     "scenario",
+    "layout",
     "strategy",
     "assignment_type",
     "makespan",
@@ -49,6 +52,7 @@ def assignment_type_label(mode: str, station_mode: str) -> str:
 
 def build_tasks_rows(
     scenario_name: str,
+    layout_id: int,
     strategy: str,
     assignment_type: str,
     makespan: int,
@@ -66,6 +70,7 @@ def build_tasks_rows(
             rows.append(
                 [
                     scenario_name,
+                    layout_id,
                     strategy,
                     assignment_type,
                     plan.agent_id,
@@ -84,6 +89,7 @@ def build_tasks_rows(
 
 def build_summary_rows(
     scenario_name: str,
+    layout_id: int,
     strategy: str,
     assignment_type: str,
     plans: list[AgentPlan],
@@ -93,6 +99,7 @@ def build_summary_rows(
         rows.append(
             [
                 scenario_name,
+                layout_id,
                 strategy,
                 assignment_type,
                 plan.agent_id,
@@ -106,6 +113,7 @@ def build_summary_rows(
 
 def build_comparison_row(
     scenario_name: str,
+    layout_id: int,
     strategy: str,
     assignment_type: str,
     makespan: int,
@@ -113,7 +121,7 @@ def build_comparison_row(
 ) -> list[object]:
     missed_deadlines = sum(len(plan.missed_deadlines) for plan in plans)
     total_tasks = sum(len(plan.tasks) for plan in plans)
-    return [scenario_name, strategy, assignment_type, makespan, missed_deadlines, total_tasks]
+    return [scenario_name, layout_id, strategy, assignment_type, makespan, missed_deadlines, total_tasks]
 
 
 def column_name(index: int) -> str:
