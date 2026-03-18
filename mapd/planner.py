@@ -24,18 +24,19 @@ class ReservationTable:
     def is_edge_conflict(self, src: Coord, dst: Coord, time: int) -> bool:
         return (dst, src) in self.edge.get(time, set())
 
-    def reserve_path(self, path: list[Coord]) -> None:
+    def reserve_path(self, path: list[Coord], permanent_final: bool = True) -> None:
         for time, coord in enumerate(path):
             self.vertex[time].add(coord)
 
         for time in range(len(path) - 1):
             self.edge[time].add((path[time], path[time + 1]))
 
-        final_coord = path[-1]
-        final_time = len(path) - 1
-        existing = self.permanent.get(final_coord)
-        self.permanent[final_coord] = final_time if existing is None else min(existing, final_time)
-        self.latest_time = max(self.latest_time, final_time)
+        if permanent_final:
+            final_coord = path[-1]
+            final_time = len(path) - 1
+            existing = self.permanent.get(final_coord)
+            self.permanent[final_coord] = final_time if existing is None else min(existing, final_time)
+            self.latest_time = max(self.latest_time, final_time)
 
 
 def build_color_palette(count: int) -> list[tuple[int, int, int]]:
@@ -335,27 +336,234 @@ def estimate_finish_times(
     return estimates
 
 
-def clear_home_reservation(reservations: ReservationTable, home: Coord, until_time: int) -> None:
-    for time in range(until_time + 1):
-        if home in reservations.vertex.get(time, set()):
-            reservations.vertex[time].discard(home)
-
-
-def station_availability(
+def goal_availability(
     reservations: ReservationTable,
-    stations: set[Coord],
+    goals: set[Coord],
 ) -> tuple[set[Coord], dict[Coord, int]]:
-    permanently_taken = set(reservations.permanent.keys()) & stations
-    available_stations = stations - permanently_taken
-    latest_visit: dict[Coord, int] = {station: -1 for station in available_stations}
+    permanently_taken = set(reservations.permanent.keys()) & goals
+    available_goals = goals - permanently_taken
+    latest_visit: dict[Coord, int] = {goal: -1 for goal in available_goals}
 
     for time, coords in reservations.vertex.items():
         for coord in coords:
             if coord in latest_visit and time > latest_visit[coord]:
                 latest_visit[coord] = time
 
-    available_after = {station: latest_time + 1 for station, latest_time in latest_visit.items()}
-    return available_stations, available_after
+    available_after = {goal: latest_time + 1 for goal, latest_time in latest_visit.items()}
+    return available_goals, available_after
+
+
+def station_availability(
+    reservations: ReservationTable,
+    stations: set[Coord],
+) -> tuple[set[Coord], dict[Coord, int]]:
+    return goal_availability(reservations, stations)
+
+
+def reserve_agent_plan(
+    reservations: ReservationTable,
+    plan: AgentPlan,
+    station_cells: set[Coord],
+) -> None:
+    reservations.reserve_path(plan.path)
+
+
+def build_reservations(
+    homes: dict[int, Coord],
+    tasks_by_agent: dict[int, list[Task]],
+    plans_by_id: dict[int, AgentPlan],
+    pending_agent_ids: set[int],
+    station_cells: set[Coord],
+) -> ReservationTable:
+    reservations = ReservationTable()
+
+    if pending_agent_ids:
+        reserve_initial_positions(
+            reservations,
+            {agent_id: homes[agent_id] for agent_id in pending_agent_ids},
+            {agent_id: tasks_by_agent[agent_id] for agent_id in pending_agent_ids},
+        )
+
+    for agent_id in sorted(plans_by_id):
+        reserve_agent_plan(reservations, plans_by_id[agent_id], station_cells)
+
+    return reservations
+
+
+def build_agent_plan(
+    warehouse: WarehouseMap,
+    reservations: ReservationTable,
+    agent_id: int,
+    home: Coord,
+    home_index: int,
+    color: tuple[int, int, int],
+    agent_tasks: list[Task],
+    station_mode: str,
+    blocked_cells: set[Coord],
+) -> AgentPlan:
+    if station_mode == "Set":
+        return_goals = {home}
+    else:
+        return_goals = set(warehouse.stations)
+
+    current = home
+    current_time = 0
+    path = [home]
+    pickup_times = {}
+    completion_times = {}
+    missed_deadlines = []
+
+    for task_index, task in enumerate(agent_tasks):
+        if current_time < task.release_time:
+            path = wait_until_time(
+                warehouse,
+                reservations,
+                path,
+                task.release_time,
+                blocked_cells=blocked_cells,
+            )
+            current = path[-1]
+            current_time = len(path) - 1
+
+        pickup_goals = warehouse.pickup_positions(task.location_index)
+        to_pickup = find_path(
+            warehouse,
+            reservations,
+            current,
+            current_time,
+            pickup_goals,
+            blocked_cells=blocked_cells,
+        )
+        path = merge_segments(path, to_pickup)
+        current = path[-1]
+        current_time = len(path) - 1
+        pickup_times[task.task_id] = current_time
+
+        goal_available_after = None
+        if task_index == len(agent_tasks) - 1:
+            if station_mode == "Available":
+                return_goals, goal_available_after = station_availability(reservations, return_goals)
+                if not return_goals:
+                    raise RuntimeError("No free station available for final return.")
+            else:
+                return_goals, goal_available_after = goal_availability(reservations, return_goals)
+
+        back_home = find_path(
+            warehouse,
+            reservations,
+            current,
+            current_time,
+            return_goals,
+            blocked_cells=blocked_cells,
+            goal_available_after=goal_available_after,
+        )
+        path = merge_segments(path, back_home)
+        current = path[-1]
+        current_time = len(path) - 1
+        completion_times[task.task_id] = current_time
+        if task.deadline is not None and current_time > task.deadline:
+            missed_deadlines.append(task.task_id)
+
+    return AgentPlan(
+        agent_id=agent_id,
+        color=color,
+        home=home,
+        home_index=home_index,
+        path=path,
+        tasks=agent_tasks,
+        pickup_times=pickup_times,
+        completion_times=completion_times,
+        missed_deadlines=missed_deadlines,
+    )
+
+
+def finished_station_conflicts(
+    path: list[Coord],
+    plans_by_id: dict[int, AgentPlan],
+    station_cells: set[Coord],
+) -> list[tuple[int, int, int]]:
+    conflicts = []
+    for blocker_id, plan in plans_by_id.items():
+        if not plan.path:
+            continue
+        blocker_coord = plan.path[-1]
+        if blocker_coord not in station_cells:
+            continue
+
+        blocker_end_time = len(plan.path) - 1
+        use_times = []
+        for time in range(blocker_end_time + 1, len(path)):
+            if path[time] == blocker_coord:
+                use_times.append(time)
+
+        if use_times:
+            conflicts.append((use_times[0], use_times[-1], blocker_id))
+
+    conflicts.sort()
+    return conflicts
+
+
+def relocate_finished_agent(
+    warehouse: WarehouseMap,
+    blocker_id: int,
+    plans_by_id: dict[int, AgentPlan],
+    tasks_by_agent: dict[int, list[Task]],
+    homes: dict[int, Coord],
+    pending_agent_ids: set[int],
+    station_cells: set[Coord],
+    protected_path: list[Coord],
+    station_release_time: int,
+) -> bool:
+    blocker_plan = plans_by_id[blocker_id]
+    if not blocker_plan.path:
+        return True
+    blocker_coord = blocker_plan.path[-1]
+    if blocker_coord not in station_cells:
+        return True
+
+    reservations = build_reservations(
+        homes,
+        tasks_by_agent,
+        {agent_id: plan for agent_id, plan in plans_by_id.items() if agent_id != blocker_id},
+        pending_agent_ids,
+        station_cells,
+    )
+    reservations.reserve_path(protected_path)
+
+    parking_goals, goal_available_after = goal_availability(
+        reservations,
+        warehouse.traversable - station_cells,
+    )
+    if not parking_goals:
+        return False
+
+    try:
+        move_to_parking = find_path(
+            warehouse,
+            reservations,
+            blocker_coord,
+            len(blocker_plan.path) - 1,
+            parking_goals,
+            goal_available_after=goal_available_after,
+        )
+    except RuntimeError:
+        return False
+
+    updated_path = merge_segments(blocker_plan.path, move_to_parking)
+    parking_time = len(updated_path) - 1
+    try:
+        back_to_station = find_path(
+            warehouse,
+            reservations,
+            updated_path[-1],
+            parking_time,
+            {blocker_coord},
+            goal_available_after={blocker_coord: station_release_time + 1},
+        )
+    except RuntimeError:
+        return False
+    blocker_plan.path = merge_segments(updated_path, back_to_station)
+    return True
 
 
 def build_agent_plans(
@@ -381,9 +589,8 @@ def build_agent_plans(
         tasks_by_agent[task.agent_id].append(task)
 
     homes = assign_home_stations(warehouse, agent_count)
+    station_cells = set(warehouse.stations)
     colors = build_color_palette(agent_count)
-    reservations = ReservationTable()
-    reserve_initial_positions(reservations, homes, tasks_by_agent)
     planning_order = list(range(agent_count))
     if station_mode == "Set":
         finish_estimates = estimate_finish_times(warehouse, tasks_by_agent, homes)
@@ -393,82 +600,52 @@ def build_agent_plans(
 
     for agent_id in planning_order:
         home = homes[agent_id]
-        if station_mode == "Set":
-            blocked_cells = set(homes.values()) - {home}
-            return_goals = {home}
-        else:
-            blocked_cells = set()
-            return_goals = set(warehouse.stations)
-        current = home
-        current_time = 0
-        path = [home]
-        pickup_times = {}
-        completion_times = {}
-        missed_deadlines = []
+        pending_agent_ids = set(range(agent_count)) - set(plans_by_id) - {agent_id}
+        blocked_cells = set()
 
-        agent_tasks = tasks_by_agent[agent_id]
-        if agent_tasks:
-            first_release = min(task.release_time for task in agent_tasks)
-            clear_home_reservation(reservations, home, first_release)
-        for task_index, task in enumerate(agent_tasks):
-            if current_time < task.release_time:
-                path = wait_until_time(
-                    warehouse,
-                    reservations,
-                    path,
-                    task.release_time,
-                    blocked_cells=blocked_cells,
+        while True:
+            reservations = build_reservations(
+                homes,
+                tasks_by_agent,
+                plans_by_id,
+                pending_agent_ids,
+                station_cells,
+            )
+            plan = build_agent_plan(
+                warehouse=warehouse,
+                reservations=reservations,
+                agent_id=agent_id,
+                home=home,
+                home_index=warehouse.coord_to_index(home),
+                color=colors[agent_id],
+                agent_tasks=tasks_by_agent[agent_id],
+                station_mode=station_mode,
+                blocked_cells=blocked_cells,
+            )
+
+            failed_blocker = None
+            for _, last_use_time, blocker_id in finished_station_conflicts(plan.path, plans_by_id, station_cells):
+                moved = relocate_finished_agent(
+                    warehouse=warehouse,
+                    blocker_id=blocker_id,
+                    plans_by_id=plans_by_id,
+                    tasks_by_agent=tasks_by_agent,
+                    homes=homes,
+                    pending_agent_ids=pending_agent_ids,
+                    station_cells=station_cells,
+                    protected_path=plan.path,
+                    station_release_time=last_use_time,
                 )
-                current = path[-1]
-                current_time = len(path) - 1
+                if not moved:
+                    failed_blocker = blocker_id
+                    break
 
-            pickup_goals = warehouse.pickup_positions(task.location_index)
-            to_pickup = find_path(
-                warehouse,
-                reservations,
-                current,
-                current_time,
-                pickup_goals,
-                blocked_cells=blocked_cells,
-            )
-            path = merge_segments(path, to_pickup)
-            current = path[-1]
-            current_time = len(path) - 1
-            pickup_times[task.task_id] = current_time
+            if failed_blocker is None:
+                break
 
-            goal_available_after = None
-            if station_mode == "Available" and task_index == len(agent_tasks) - 1:
-                return_goals, goal_available_after = station_availability(reservations, return_goals)
-                if not return_goals:
-                    raise RuntimeError("No free station available for final return.")
+            blocker_plan = plans_by_id[failed_blocker]
+            blocked_cells.add(blocker_plan.path[-1])
 
-            back_home = find_path(
-                warehouse,
-                reservations,
-                current,
-                current_time,
-                return_goals,
-                blocked_cells=blocked_cells,
-                goal_available_after=goal_available_after,
-            )
-            path = merge_segments(path, back_home)
-            current = path[-1]
-            current_time = len(path) - 1
-            completion_times[task.task_id] = current_time
-            if task.deadline is not None and current_time > task.deadline:
-                missed_deadlines.append(task.task_id)
-
-        reservations.reserve_path(path)
-        plans_by_id[agent_id] = AgentPlan(
-            agent_id=agent_id,
-            color=colors[agent_id],
-            home=home,
-            home_index=warehouse.coord_to_index(home),
-            path=path,
-            tasks=tasks_by_agent[agent_id],
-            pickup_times=pickup_times,
-            completion_times=completion_times,
-            missed_deadlines=missed_deadlines,
-        )
+        plans_by_id[agent_id] = plan
 
     return [plans_by_id[agent_id] for agent_id in range(agent_count)]

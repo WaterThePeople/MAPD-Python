@@ -1,10 +1,19 @@
 import argparse
 from pathlib import Path
-from typing import Iterable
 
 from mapd.loader import load_layout, load_scenario
 from mapd.planner import build_agent_plans
 from mapd.renderer import render_frames
+from mapd.results_workbook import (
+    COMPARISON_HEADERS,
+    SUMMARY_HEADERS,
+    TASKS_HEADERS,
+    assignment_type_label,
+    build_comparison_row,
+    build_summary_rows,
+    build_tasks_rows,
+    write_xlsx_workbook,
+)
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Proof-of-concept MAPD simulator with GIF export.")
@@ -23,7 +32,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--output", default="gifs/simulation.gif", help="Path to the output GIF.")
     parser.add_argument("--suite-output-dir", default="gifs", help="Output directory for scenario suite GIFs.")
-    parser.add_argument("--results-dir", default="results", help="Directory for scenario suite results file.")
+    parser.add_argument("--results-dir", default="results", help="Directory for scenario suite Excel workbooks.")
     parser.add_argument("--cell-size", type=int, default=48, help="Rendered size of a single cell in pixels.")
     parser.add_argument("--frame-duration", type=int, default=250, help="GIF frame duration in milliseconds.")
     parser.add_argument(
@@ -148,22 +157,6 @@ def run_simulation(
     return makespan, plans, mode, station_mode, strategy
 
 
-def write_suite_results(
-    results_path: Path,
-    suite_name: str,
-    sections: Iterable[tuple[str, list[str]]],
-) -> None:
-    results_path.parent.mkdir(parents=True, exist_ok=True)
-    lines = []
-    lines.append(f"Scenario suite: {suite_name}")
-    lines.append("")
-    for title, summary in sections:
-        lines.append(f"== {title} ==")
-        lines.extend(summary)
-        lines.append("")
-    results_path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
-
-
 def main() -> None:
     args = parse_args()
 
@@ -177,7 +170,9 @@ def main() -> None:
         if missing:
             raise FileNotFoundError("Missing scenario files: " + ", ".join(missing))
 
-        sections = []
+        tasks_rows = [TASKS_HEADERS]
+        summary_rows = [SUMMARY_HEADERS]
+        comparison_rows = [COMPARISON_HEADERS]
         output_dir = Path(args.suite_output_dir)
         for scenario_path in scenario_paths:
             scenario_label = scenario_path.stem
@@ -192,12 +187,20 @@ def main() -> None:
                 progress=True,
                 render_gif=not args.no_gif,
             )
-            summary = summary_lines(plans, makespan, output_path, station_mode, not args.no_gif)
-            summary.insert(0, f"[done] Strategy: {strategy}")
-            sections.append((scenario_label, summary))
+            assignment_type = assignment_type_label(mode, station_mode)
+            tasks_rows.extend(build_tasks_rows(suite_name, strategy, assignment_type, makespan, plans)[1:])
+            summary_rows.extend(build_summary_rows(suite_name, strategy, assignment_type, plans)[1:])
+            comparison_rows.append(build_comparison_row(suite_name, strategy, assignment_type, makespan, plans))
 
-        results_path = Path(args.results_dir) / f"{suite_name}_results.txt"
-        write_suite_results(results_path, suite_name, sections)
+        results_path = Path(args.results_dir) / f"{suite_name}_results.xlsx"
+        write_xlsx_workbook(
+            results_path,
+            [
+                ("Tasks", tasks_rows),
+                ("Agent Summary", summary_rows),
+                ("Overall Comparison", comparison_rows),
+            ],
+        )
         print(f"[done] Wrote suite results: {results_path}")
         return
 
