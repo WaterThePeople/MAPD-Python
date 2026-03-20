@@ -1,7 +1,8 @@
 import colorsys
 from collections import defaultdict
-from collections import deque
 
+from mapd.algorithms import get_algorithm, normalize_algorithm_name
+from mapd.algorithms.base import SearchProblem
 from mapd.models import AgentPlan, Coord, Task
 from mapd.strategy import get_strategy
 from mapd.warehouse import WarehouseMap
@@ -48,16 +49,20 @@ def build_color_palette(count: int) -> list[tuple[int, int, int]]:
     return palette
 
 
-def rebuild_path(came_from: dict[tuple[Coord, int], tuple[Coord, int]], end_state: tuple[Coord, int]) -> list[Coord]:
-    state = end_state
-    path = [state[0]]
+def manhattan_distance(src: Coord, dst: Coord) -> int:
+    return abs(src[0] - dst[0]) + abs(src[1] - dst[1])
 
-    while state in came_from:
-        state = came_from[state]
-        path.append(state[0])
 
-    path.reverse()
-    return path
+def goal_heuristic(coord: Coord, goals: set[Coord]) -> int:
+    if not goals:
+        return 0
+    return min(manhattan_distance(coord, goal) for goal in goals)
+
+
+def descending_coord_priority(warehouse: WarehouseMap, coord: Coord) -> int:
+    # On this warehouse family, preferring later-index cells on equal f-costs
+    # keeps the heuristic search from over-occupying the upper station lanes.
+    return -warehouse.coord_to_index(coord)
 
 
 def find_path(
@@ -66,6 +71,7 @@ def find_path(
     start: Coord,
     start_time: int,
     goals: set[Coord],
+    algorithm: str,
     blocked_cells: set[Coord] | None = None,
     goal_available_after: dict[Coord, int] | None = None,
 ) -> list[Coord]:
@@ -73,28 +79,44 @@ def find_path(
         blocked_cells = set()
     if goal_available_after is None:
         goal_available_after = {}
+    if not goals:
+        raise RuntimeError("Could not find a collision-free path because no goal cells were available.")
 
     max_time = start_time + warehouse.cell_count * 8 + reservations.latest_time + 20
-    queue = deque()
-    queue.append((start, start_time))
+    canonical_algorithm = normalize_algorithm_name(algorithm)
+    search = get_algorithm(canonical_algorithm)
 
-    visited = set()
-    visited.add((start, start_time))
-    came_from = {}
+    if canonical_algorithm == "SIPP":
+        try:
+            return search.find_path(
+                warehouse=warehouse,
+                reservations=reservations,
+                start=start,
+                start_time=start_time,
+                goals=goals,
+                max_time=max_time,
+                blocked_cells=blocked_cells,
+                goal_available_after=goal_available_after,
+            )
+        except RuntimeError as exc:
+            raise RuntimeError(
+                f"Could not find a collision-free path from {start} at time {start_time} using {search.name}."
+            ) from exc
 
-    while queue:
-        current, time = queue.popleft()
-
-        if (
+    def is_goal(state: tuple[Coord, int]) -> bool:
+        current, time = state
+        return (
             current in goals
             and not reservations.is_vertex_reserved(current, time)
             and time >= goal_available_after.get(current, 0)
-        ):
-            return rebuild_path(came_from, (current, time))
+        )
 
+    def neighbors(state: tuple[Coord, int]) -> list[tuple[Coord, int]]:
+        current, time = state
         if time >= max_time:
-            continue
+            return []
 
+        next_states = []
         next_positions = [current]
         next_positions.extend(warehouse.neighbors(current))
 
@@ -108,15 +130,26 @@ def find_path(
             if reservations.is_edge_conflict(current, next_coord, time):
                 continue
 
-            next_state = (next_coord, next_time)
-            if next_state in visited:
-                continue
+            next_states.append((next_coord, next_time))
 
-            visited.add(next_state)
-            came_from[next_state] = (current, time)
-            queue.append(next_state)
+        return next_states
 
-    raise RuntimeError(f"Could not find a collision-free path from {start} at time {start_time}.")
+    problem = SearchProblem(
+        start=(start, start_time),
+        is_goal=is_goal,
+        neighbors=neighbors,
+        heuristic=lambda state: goal_heuristic(state[0], goals),
+        tie_breaker=lambda state: descending_coord_priority(warehouse, state[0]),
+    )
+
+    try:
+        states = search.search(problem)
+    except RuntimeError as exc:
+        raise RuntimeError(
+            f"Could not find a collision-free path from {start} at time {start_time} using {search.name}."
+        ) from exc
+
+    return [coord for coord, _ in states]
 
 
 def merge_segments(base_path: list[Coord], segment: list[Coord]) -> list[Coord]:
@@ -130,6 +163,7 @@ def wait_until_time(
     reservations: ReservationTable,
     path: list[Coord],
     target_time: int,
+    algorithm: str,
     blocked_cells: set[Coord] | None = None,
 ) -> list[Coord]:
     if blocked_cells is None:
@@ -151,16 +185,12 @@ def wait_until_time(
             path.append(path[-1])
         return path
 
-    queue = deque()
-    queue.append((start, start_time))
-    visited = {(start, start_time)}
-    came_from = {}
+    search_algorithm = "A*" if normalize_algorithm_name(algorithm) == "SIPP" else algorithm
+    search = get_algorithm(search_algorithm)
 
-    while queue:
-        current, time = queue.popleft()
-        if time == target_time:
-            wait_path = rebuild_path(came_from, (current, time))
-            return merge_segments(path, wait_path)
+    def neighbors(state: tuple[Coord, int]) -> list[tuple[Coord, int]]:
+        current, time = state
+        next_states = []
 
         next_positions = [current]
         next_positions.extend(warehouse.neighbors(current))
@@ -174,17 +204,28 @@ def wait_until_time(
             if reservations.is_edge_conflict(current, next_coord, time):
                 continue
 
-            state = (next_coord, next_time)
-            if state in visited:
-                continue
+            next_states.append((next_coord, next_time))
 
-            visited.add(state)
-            came_from[state] = (current, time)
-            queue.append(state)
+        return next_states
 
-    raise RuntimeError(
-        f"Could not find a collision-free waiting path from {start} at time {start_time} to time {target_time}."
+    problem = SearchProblem(
+        start=(start, start_time),
+        is_goal=lambda state: state[1] == target_time,
+        neighbors=neighbors,
+        heuristic=lambda state: max(0, target_time - state[1]),
+        tie_breaker=lambda state: descending_coord_priority(warehouse, state[0]),
     )
+
+    try:
+        states = search.search(problem)
+    except RuntimeError as exc:
+        raise RuntimeError(
+            f"Could not find a collision-free waiting path from {start} at time {start_time} "
+            f"to time {target_time} using {search.name}."
+        ) from exc
+
+    wait_path = [coord for coord, _ in states]
+    return merge_segments(path, wait_path)
 
 
 def assign_home_stations(warehouse: WarehouseMap, agent_count: int) -> dict[int, Coord]:
@@ -205,26 +246,27 @@ def shortest_distance(
     start: Coord,
     goals: set[Coord],
     blocked_cells: set[Coord],
+    algorithm: str,
 ) -> int:
-    queue = deque()
-    queue.append((start, 0))
-    visited = {start}
+    if not goals:
+        raise RuntimeError("Could not find a static path because no goal cells were available.")
 
-    while queue:
-        current, distance = queue.popleft()
-        if current in goals:
-            return distance
+    search_algorithm = "A*" if normalize_algorithm_name(algorithm) == "SIPP" else algorithm
+    search = get_algorithm(search_algorithm)
+    problem = SearchProblem(
+        start=start,
+        is_goal=lambda coord: coord in goals,
+        neighbors=lambda coord: [next_coord for next_coord in warehouse.neighbors(coord) if next_coord not in blocked_cells],
+        heuristic=lambda coord: goal_heuristic(coord, goals),
+        tie_breaker=lambda coord: descending_coord_priority(warehouse, coord),
+    )
 
-        for next_coord in warehouse.neighbors(current):
-            if next_coord in blocked_cells:
-                continue
-            if next_coord in visited:
-                continue
+    try:
+        path = search.search(problem)
+    except RuntimeError as exc:
+        raise RuntimeError(f"Could not find a static path from {start} to task goals using {search.name}.") from exc
 
-            visited.add(next_coord)
-            queue.append((next_coord, distance + 1))
-
-    raise RuntimeError(f"Could not find a static path from {start} to task goals.")
+    return len(path) - 1
 
 
 def assign_available_tasks(
@@ -233,6 +275,7 @@ def assign_available_tasks(
     tasks: list[Task],
     station_mode: str,
     strategy: str,
+    algorithm: str,
 ) -> list[Task]:
     strategy_impl = get_strategy(strategy, agent_count)
     if strategy_impl.name == "None":
@@ -254,14 +297,14 @@ def assign_available_tasks(
         cache_key = (agent_id, task.location_index)
         if cache_key not in distance_cache:
             pickup_goals = warehouse.pickup_positions(task.location_index)
-            distance_cache[cache_key] = shortest_distance(warehouse, homes[agent_id], pickup_goals, set())
+            distance_cache[cache_key] = shortest_distance(warehouse, homes[agent_id], pickup_goals, set(), algorithm)
 
         distance_to_pickup = distance_cache[cache_key]
         if station_mode == "Available":
             if task.location_index not in return_cache:
                 pickup_goals = warehouse.pickup_positions(task.location_index)
                 return_cache[task.location_index] = min(
-                    shortest_distance(warehouse, pickup, station_goals, set()) for pickup in pickup_goals
+                    shortest_distance(warehouse, pickup, station_goals, set(), algorithm) for pickup in pickup_goals
                 )
             return_distance = return_cache[task.location_index]
         else:
@@ -313,6 +356,7 @@ def estimate_finish_times(
     warehouse: WarehouseMap,
     tasks_by_agent: dict[int, list[Task]],
     homes: dict[int, Coord],
+    algorithm: str,
 ) -> dict[int, int]:
     estimates: dict[int, int] = {}
     distance_cache: dict[tuple[int, int], int] = {}
@@ -327,7 +371,7 @@ def estimate_finish_times(
             cache_key = (agent_id, task.location_index)
             if cache_key not in distance_cache:
                 pickup_goals = warehouse.pickup_positions(task.location_index)
-                distance_cache[cache_key] = shortest_distance(warehouse, home, pickup_goals, set())
+                distance_cache[cache_key] = shortest_distance(warehouse, home, pickup_goals, set(), algorithm)
 
             current_time += distance_cache[cache_key] * 2
 
@@ -399,6 +443,7 @@ def build_agent_plan(
     color: tuple[int, int, int],
     agent_tasks: list[Task],
     station_mode: str,
+    algorithm: str,
     blocked_cells: set[Coord],
 ) -> AgentPlan:
     if station_mode == "Set":
@@ -420,6 +465,7 @@ def build_agent_plan(
                 reservations,
                 path,
                 task.release_time,
+                algorithm,
                 blocked_cells=blocked_cells,
             )
             current = path[-1]
@@ -432,6 +478,7 @@ def build_agent_plan(
             current,
             current_time,
             pickup_goals,
+            algorithm,
             blocked_cells=blocked_cells,
         )
         path = merge_segments(path, to_pickup)
@@ -454,6 +501,7 @@ def build_agent_plan(
             current,
             current_time,
             return_goals,
+            algorithm,
             blocked_cells=blocked_cells,
             goal_available_after=goal_available_after,
         )
@@ -513,6 +561,7 @@ def relocate_finished_agent(
     station_cells: set[Coord],
     protected_path: list[Coord],
     station_release_time: int,
+    algorithm: str,
 ) -> bool:
     blocker_plan = plans_by_id[blocker_id]
     if not blocker_plan.path:
@@ -544,6 +593,7 @@ def relocate_finished_agent(
             blocker_coord,
             len(blocker_plan.path) - 1,
             parking_goals,
+            algorithm,
             goal_available_after=goal_available_after,
         )
     except RuntimeError:
@@ -558,6 +608,7 @@ def relocate_finished_agent(
             updated_path[-1],
             parking_time,
             {blocker_coord},
+            algorithm,
             goal_available_after={blocker_coord: station_release_time + 1},
         )
     except RuntimeError:
@@ -573,9 +624,10 @@ def build_agent_plans(
     mode: str,
     station_mode: str,
     strategy: str,
+    algorithm: str,
 ) -> list[AgentPlan]:
     if mode == "Available":
-        tasks = assign_available_tasks(warehouse, agent_count, tasks, station_mode, strategy)
+        tasks = assign_available_tasks(warehouse, agent_count, tasks, station_mode, strategy, algorithm)
 
     for task in tasks:
         if task.agent_id < 0 or task.agent_id >= agent_count:
@@ -593,7 +645,7 @@ def build_agent_plans(
     colors = build_color_palette(agent_count)
     planning_order = list(range(agent_count))
     if station_mode == "Set":
-        finish_estimates = estimate_finish_times(warehouse, tasks_by_agent, homes)
+        finish_estimates = estimate_finish_times(warehouse, tasks_by_agent, homes, algorithm)
         planning_order.sort(key=lambda agent_id: (finish_estimates[agent_id], agent_id))
 
     plans_by_id = {}
@@ -620,6 +672,7 @@ def build_agent_plans(
                 color=colors[agent_id],
                 agent_tasks=tasks_by_agent[agent_id],
                 station_mode=station_mode,
+                algorithm=algorithm,
                 blocked_cells=blocked_cells,
             )
 
@@ -635,6 +688,7 @@ def build_agent_plans(
                     station_cells=station_cells,
                     protected_path=plan.path,
                     station_release_time=last_use_time,
+                    algorithm=algorithm,
                 )
                 if not moved:
                     failed_blocker = blocker_id

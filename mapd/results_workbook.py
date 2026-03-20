@@ -12,6 +12,7 @@ TASKS_HEADERS = [
     "scenario",
     "layout",
     "strategy",
+    "algorithm",
     "assignment_type",
     "agent_id",
     "start_station",
@@ -28,6 +29,7 @@ SUMMARY_HEADERS = [
     "scenario",
     "layout",
     "strategy",
+    "algorithm",
     "assignment_type",
     "agent_id",
     "start_station",
@@ -39,6 +41,7 @@ COMPARISON_HEADERS = [
     "scenario",
     "layout",
     "strategy",
+    "algorithm",
     "assignment_type",
     "makespan",
     "missed_deadlines",
@@ -54,6 +57,7 @@ def build_tasks_rows(
     scenario_name: str,
     layout_id: int,
     strategy: str,
+    algorithm: str,
     assignment_type: str,
     makespan: int,
     plans: list[AgentPlan],
@@ -72,6 +76,7 @@ def build_tasks_rows(
                     scenario_name,
                     layout_id,
                     strategy,
+                    algorithm,
                     assignment_type,
                     plan.agent_id,
                     plan.home_index,
@@ -91,6 +96,7 @@ def build_summary_rows(
     scenario_name: str,
     layout_id: int,
     strategy: str,
+    algorithm: str,
     assignment_type: str,
     plans: list[AgentPlan],
 ) -> list[list[object]]:
@@ -101,6 +107,7 @@ def build_summary_rows(
                 scenario_name,
                 layout_id,
                 strategy,
+                algorithm,
                 assignment_type,
                 plan.agent_id,
                 plan.home_index,
@@ -115,13 +122,14 @@ def build_comparison_row(
     scenario_name: str,
     layout_id: int,
     strategy: str,
+    algorithm: str,
     assignment_type: str,
     makespan: int,
     plans: list[AgentPlan],
 ) -> list[object]:
     missed_deadlines = sum(len(plan.missed_deadlines) for plan in plans)
     total_tasks = sum(len(plan.tasks) for plan in plans)
-    return [scenario_name, layout_id, strategy, assignment_type, makespan, missed_deadlines, total_tasks]
+    return [scenario_name, layout_id, strategy, algorithm, assignment_type, makespan, missed_deadlines, total_tasks]
 
 
 def column_name(index: int) -> str:

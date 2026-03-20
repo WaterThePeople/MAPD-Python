@@ -27,13 +27,13 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--scenario",
-        default="maps/scenarios/0/0_set_set_none_map0.txt",
+        default="scenarios/0/0_set_set_none_bfs_map0.txt",
         help="Path to the scenario file.",
     )
     parser.add_argument(
         "--scenario-suite",
         help=(
-            "Run all scenario variants for a scenario base name (e.g. '2' or 'maps/scenarios/2'). "
+            "Run all scenario variants for a scenario base name (e.g. '2' or 'scenarios/2'). "
             "Overrides --scenario and --output."
         ),
     )
@@ -124,7 +124,7 @@ def derive_suite_paths(suite_arg: str) -> tuple[str, list[Path]]:
     if suite_path.is_dir():
         scenarios_dir = suite_path
     else:
-        candidate_dir = Path("maps/scenarios") / suite_arg
+        candidate_dir = Path("scenarios") / suite_arg
         if candidate_dir.is_dir():
             scenarios_dir = candidate_dir
         elif suite_path.is_file():
@@ -134,6 +134,12 @@ def derive_suite_paths(suite_arg: str) -> tuple[str, list[Path]]:
 
     suite_name = scenarios_dir.name
     all_paths = sorted(scenarios_dir.glob("*.txt"))
+    algorithm_paths = [
+        path for path in all_paths if re.search(r"_(bfs|astar|sipp)(?:_map\d+)?\.txt$", path.name, re.IGNORECASE)
+    ]
+    if algorithm_paths:
+        return suite_name, algorithm_paths
+
     mapped_paths = [path for path in all_paths if re.search(r"_map\d+\.txt$", path.name)]
     paths = mapped_paths or all_paths
     return suite_name, paths
@@ -163,6 +169,7 @@ def run_simulation(
     mode: str,
     station_mode: str,
     strategy: str,
+    algorithm: str,
     output_path: Path | None,
     cell_size: int,
     frame_duration: int,
@@ -170,7 +177,7 @@ def run_simulation(
     render_gif: bool,
     debug_frames_dir: Path | None = None,
 ) -> tuple[int, list]:
-    plans = build_agent_plans(warehouse, agent_count, tasks, mode, station_mode, strategy)
+    plans = build_agent_plans(warehouse, agent_count, tasks, mode, station_mode, strategy, algorithm)
     if render_gif or debug_frames_dir is not None:
         if render_gif and output_path is None:
             raise ValueError("Output path must be provided when rendering GIFs.")
@@ -205,12 +212,15 @@ def main() -> None:
             scenario_label = scenario_path.stem
             output_path = None if args.no_gif else output_dir / f"{scenario_label}.gif"
             print(f"[2/4] Loading scenario from {scenario_path}")
-            agent_count, tasks, mode, station_mode, strategy, scenario_layout_id = load_scenario(scenario_path)
+            agent_count, tasks, mode, station_mode, strategy, algorithm, scenario_layout_id = load_scenario(
+                scenario_path
+            )
             resolved_layout_id, resolved_layout_path = resolve_layout_reference(None, scenario_layout_id)
             warehouse = load_layout(resolved_layout_path)
             print(
                 f"[2/4] Scenario loaded: {agent_count} agents, {len(tasks)} tasks, "
-                f"mode={mode}, station={station_mode}, strategy={strategy}, layout={resolved_layout_id}"
+                f"mode={mode}, station={station_mode}, strategy={strategy}, "
+                f"algorithm={algorithm}, layout={resolved_layout_id}"
             )
             print(f"[2/4] Layout loaded from {resolved_layout_path}: {warehouse.width}x{warehouse.height}")
             makespan, plans = run_simulation(
@@ -220,6 +230,7 @@ def main() -> None:
                 mode,
                 station_mode,
                 strategy,
+                algorithm,
                 output_path,
                 args.cell_size,
                 args.frame_duration,
@@ -228,16 +239,17 @@ def main() -> None:
             )
             assignment_type = assignment_type_label(mode, station_mode)
             tasks_rows.extend(
-                build_tasks_rows(suite_name, resolved_layout_id, strategy, assignment_type, makespan, plans)[1:]
+                build_tasks_rows(suite_name, resolved_layout_id, strategy, algorithm, assignment_type, makespan, plans)[1:]
             )
             summary_rows.extend(
-                build_summary_rows(suite_name, resolved_layout_id, strategy, assignment_type, plans)[1:]
+                build_summary_rows(suite_name, resolved_layout_id, strategy, algorithm, assignment_type, plans)[1:]
             )
             comparison_rows.append(
                 build_comparison_row(
                     suite_name,
                     resolved_layout_id,
                     strategy,
+                    algorithm,
                     assignment_type,
                     makespan,
                     plans,
@@ -258,10 +270,11 @@ def main() -> None:
 
     scenario_path = Path(args.scenario)
     print(f"[1/4] Loading scenario from {scenario_path}")
-    agent_count, tasks, mode, station_mode, strategy, scenario_layout_id = load_scenario(scenario_path)
+    agent_count, tasks, mode, station_mode, strategy, algorithm, scenario_layout_id = load_scenario(scenario_path)
     print(
         f"[1/4] Scenario loaded: {agent_count} agents, {len(tasks)} tasks, "
-        f"mode={mode}, station={station_mode}, strategy={strategy}, layout={scenario_layout_id}"
+        f"mode={mode}, station={station_mode}, strategy={strategy}, "
+        f"algorithm={algorithm}, layout={scenario_layout_id}"
     )
 
     resolved_layout_id, resolved_layout_path = resolve_layout_reference(args.layout, scenario_layout_id)
@@ -270,7 +283,7 @@ def main() -> None:
     print(f"[2/4] Layout loaded: {warehouse.width}x{warehouse.height} (layout={resolved_layout_id})")
 
     print("[3/4] Planning collision-free routes")
-    plans = build_agent_plans(warehouse, agent_count, tasks, mode, station_mode, strategy)
+    plans = build_agent_plans(warehouse, agent_count, tasks, mode, station_mode, strategy, algorithm)
     print("[3/4] Route planning finished")
 
     output_path = None if args.no_gif else Path(args.output)
