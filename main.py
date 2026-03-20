@@ -2,7 +2,13 @@ import argparse
 import re
 from pathlib import Path
 
-from mapd.loader import layout_path, load_layout, load_scenario
+from mapd.loader import (
+    expand_scenario_variants,
+    layout_path,
+    load_layout,
+    load_scenario_definition,
+    resolve_scenario_variant,
+)
 from mapd.planner import build_agent_plans
 from mapd.renderer import render_frames
 from mapd.results_workbook import (
@@ -27,7 +33,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--scenario",
-        default="scenarios/0/0_set_set_none_bfs_map0.txt",
+        default="scenarios/0/0_map0.txt",
         help="Path to the scenario file.",
     )
     parser.add_argument(
@@ -42,6 +48,47 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--results-dir", default="results", help="Directory for scenario suite Excel workbooks.")
     parser.add_argument("--cell-size", type=int, default=48, help="Rendered size of a single cell in pixels.")
     parser.add_argument("--frame-duration", type=int, default=250, help="GIF frame duration in milliseconds.")
+    parser.add_argument("--mode", choices=["Set", "Available"], help="Override the scenario Mode for a single run.")
+    parser.add_argument(
+        "--station",
+        choices=["Set", "Available"],
+        help="Override the scenario Station mode for a single run.",
+    )
+    parser.add_argument(
+        "--set",
+        dest="mode_station_flags",
+        action="append_const",
+        const="Set",
+        help="Shorthand flag: first use fills Mode, second use fills Station.",
+    )
+    parser.add_argument(
+        "--available",
+        dest="mode_station_flags",
+        action="append_const",
+        const="Available",
+        help="Shorthand flag: first use fills Mode, second use fills Station.",
+    )
+    strategy_group = parser.add_mutually_exclusive_group()
+    strategy_group.add_argument(
+        "--strategy",
+        dest="strategy_override",
+        choices=["FCFS", "Robin", "GreedyCost", "None"],
+        help="Override the scenario strategy for a single run.",
+    )
+    strategy_group.add_argument("--fcfs", dest="strategy_override", action="store_const", const="FCFS")
+    strategy_group.add_argument("--robin", dest="strategy_override", action="store_const", const="Robin")
+    strategy_group.add_argument("--greedycost", dest="strategy_override", action="store_const", const="GreedyCost")
+    strategy_group.add_argument("--none", dest="strategy_override", action="store_const", const="None")
+    algorithm_group = parser.add_mutually_exclusive_group()
+    algorithm_group.add_argument(
+        "--algorithm",
+        dest="algorithm_override",
+        choices=["A*", "SIPP", "BFS"],
+        help="Override the scenario pathfinding algorithm for a single run.",
+    )
+    algorithm_group.add_argument("--astar", dest="algorithm_override", action="store_const", const="A*")
+    algorithm_group.add_argument("--sipp", dest="algorithm_override", action="store_const", const="SIPP")
+    algorithm_group.add_argument("--bfs", dest="algorithm_override", action="store_const", const="BFS")
     parser.add_argument(
         "--debug-frames-dir",
         help=(
@@ -55,6 +102,18 @@ def parse_args() -> argparse.Namespace:
         parser.error("--debug-frames-dir can only be used with a single --scenario run.")
     if args.scenario_suite and args.layout:
         parser.error("--layout cannot be used with --scenario-suite because each scenario selects its own layout.")
+    mode_station_flags = list(args.mode_station_flags or [])
+    missing_slots = int(args.mode is None) + int(args.station is None)
+    if len(mode_station_flags) > missing_slots:
+        parser.error("Too many --set/--available shorthand flags for the requested Mode/Station overrides.")
+    if args.mode is None and mode_station_flags:
+        args.mode = mode_station_flags.pop(0)
+    if args.station is None and mode_station_flags:
+        args.station = mode_station_flags.pop(0)
+    if args.scenario_suite and any(
+        value is not None for value in (args.mode, args.station, args.strategy_override, args.algorithm_override)
+    ):
+        parser.error("Variant override flags can only be used with a single --scenario run.")
     return args
 
 
@@ -134,15 +193,31 @@ def derive_suite_paths(suite_arg: str) -> tuple[str, list[Path]]:
 
     suite_name = scenarios_dir.name
     all_paths = sorted(scenarios_dir.glob("*.txt"))
-    algorithm_paths = [
-        path for path in all_paths if re.search(r"_(bfs|astar|sipp)(?:_map\d+)?\.txt$", path.name, re.IGNORECASE)
-    ]
-    if algorithm_paths:
-        return suite_name, algorithm_paths
-
-    mapped_paths = [path for path in all_paths if re.search(r"_map\d+\.txt$", path.name)]
+    mapped_paths = [path for path in all_paths if re.fullmatch(rf"{re.escape(suite_name)}_map\d+\.txt", path.name, re.IGNORECASE)]
     paths = mapped_paths or all_paths
     return suite_name, paths
+
+
+def variant_filename_token(value: str) -> str:
+    token_map = {
+        "Set": "set",
+        "Available": "available",
+        "FCFS": "fcfs",
+        "Robin": "robin",
+        "GreedyCost": "greedycost",
+        "None": "none",
+        "A*": "astar",
+        "SIPP": "sipp",
+        "BFS": "bfs",
+    }
+    return token_map[value]
+
+
+def variant_label(scenario_label: str, mode: str, station_mode: str, strategy: str, algorithm: str) -> str:
+    return (
+        f"{scenario_label}_{variant_filename_token(mode)}_{variant_filename_token(station_mode)}_"
+        f"{variant_filename_token(strategy)}_{variant_filename_token(algorithm)}"
+    )
 
 
 def resolve_layout_reference(layout_arg: str | None, scenario_layout_id: int) -> tuple[int, Path]:
@@ -209,52 +284,72 @@ def main() -> None:
         comparison_rows = [COMPARISON_HEADERS]
         output_dir = Path(args.suite_output_dir)
         for scenario_path in scenario_paths:
-            scenario_label = scenario_path.stem
-            output_path = None if args.no_gif else output_dir / f"{scenario_label}.gif"
             print(f"[2/4] Loading scenario from {scenario_path}")
-            agent_count, tasks, mode, station_mode, strategy, algorithm, scenario_layout_id = load_scenario(
-                scenario_path
-            )
-            resolved_layout_id, resolved_layout_path = resolve_layout_reference(None, scenario_layout_id)
+            definition = load_scenario_definition(scenario_path)
+            resolved_layout_id, resolved_layout_path = resolve_layout_reference(None, definition.layout_id)
             warehouse = load_layout(resolved_layout_path)
-            print(
-                f"[2/4] Scenario loaded: {agent_count} agents, {len(tasks)} tasks, "
-                f"mode={mode}, station={station_mode}, strategy={strategy}, "
-                f"algorithm={algorithm}, layout={resolved_layout_id}"
-            )
             print(f"[2/4] Layout loaded from {resolved_layout_path}: {warehouse.width}x{warehouse.height}")
-            makespan, plans = run_simulation(
-                warehouse,
-                agent_count,
-                tasks,
-                mode,
-                station_mode,
-                strategy,
-                algorithm,
-                output_path,
-                args.cell_size,
-                args.frame_duration,
-                progress=True,
-                render_gif=not args.no_gif,
-            )
-            assignment_type = assignment_type_label(mode, station_mode)
-            tasks_rows.extend(
-                build_tasks_rows(suite_name, resolved_layout_id, strategy, algorithm, assignment_type, makespan, plans)[1:]
-            )
-            summary_rows.extend(
-                build_summary_rows(suite_name, resolved_layout_id, strategy, algorithm, assignment_type, plans)[1:]
-            )
-            comparison_rows.append(
-                build_comparison_row(
-                    suite_name,
-                    resolved_layout_id,
-                    strategy,
-                    algorithm,
-                    assignment_type,
-                    makespan,
-                    plans,
+            for variant in expand_scenario_variants(definition):
+                scenario_variant_label = variant_label(
+                    scenario_path.stem,
+                    variant.mode,
+                    variant.station_mode,
+                    variant.strategy,
+                    variant.algorithm,
                 )
-            )
+                output_path = None if args.no_gif else output_dir / f"{scenario_variant_label}.gif"
+                print(
+                    f"[2/4] Scenario variant: {definition.agent_count} agents, {len(definition.tasks)} tasks, "
+                    f"mode={variant.mode}, station={variant.station_mode}, strategy={variant.strategy}, "
+                    f"algorithm={variant.algorithm}, layout={resolved_layout_id}"
+                )
+                makespan, plans = run_simulation(
+                    warehouse,
+                    definition.agent_count,
+                    definition.tasks,
+                    variant.mode,
+                    variant.station_mode,
+                    variant.strategy,
+                    variant.algorithm,
+                    output_path,
+                    args.cell_size,
+                    args.frame_duration,
+                    progress=True,
+                    render_gif=not args.no_gif,
+                )
+                assignment_type = assignment_type_label(variant.mode, variant.station_mode)
+                tasks_rows.extend(
+                    build_tasks_rows(
+                        suite_name,
+                        resolved_layout_id,
+                        variant.strategy,
+                        variant.algorithm,
+                        assignment_type,
+                        makespan,
+                        plans,
+                    )[1:]
+                )
+                summary_rows.extend(
+                    build_summary_rows(
+                        suite_name,
+                        resolved_layout_id,
+                        variant.strategy,
+                        variant.algorithm,
+                        assignment_type,
+                        plans,
+                    )[1:]
+                )
+                comparison_rows.append(
+                    build_comparison_row(
+                        suite_name,
+                        resolved_layout_id,
+                        variant.strategy,
+                        variant.algorithm,
+                        assignment_type,
+                        makespan,
+                        plans,
+                    )
+                )
 
         results_path = Path(args.results_dir) / f"{suite_name}_results.xlsx"
         write_xlsx_workbook(
@@ -270,20 +365,35 @@ def main() -> None:
 
     scenario_path = Path(args.scenario)
     print(f"[1/4] Loading scenario from {scenario_path}")
-    agent_count, tasks, mode, station_mode, strategy, algorithm, scenario_layout_id = load_scenario(scenario_path)
+    definition = load_scenario_definition(scenario_path)
+    variant = resolve_scenario_variant(
+        definition,
+        mode=args.mode,
+        station_mode=args.station,
+        strategy=args.strategy_override,
+        algorithm=args.algorithm_override,
+    )
     print(
-        f"[1/4] Scenario loaded: {agent_count} agents, {len(tasks)} tasks, "
-        f"mode={mode}, station={station_mode}, strategy={strategy}, "
-        f"algorithm={algorithm}, layout={scenario_layout_id}"
+        f"[1/4] Scenario loaded: {definition.agent_count} agents, {len(definition.tasks)} tasks, "
+        f"mode={variant.mode}, station={variant.station_mode}, strategy={variant.strategy}, "
+        f"algorithm={variant.algorithm}, layout={definition.layout_id}"
     )
 
-    resolved_layout_id, resolved_layout_path = resolve_layout_reference(args.layout, scenario_layout_id)
+    resolved_layout_id, resolved_layout_path = resolve_layout_reference(args.layout, definition.layout_id)
     print(f"[2/4] Loading layout from {resolved_layout_path}")
     warehouse = load_layout(resolved_layout_path)
     print(f"[2/4] Layout loaded: {warehouse.width}x{warehouse.height} (layout={resolved_layout_id})")
 
     print("[3/4] Planning collision-free routes")
-    plans = build_agent_plans(warehouse, agent_count, tasks, mode, station_mode, strategy, algorithm)
+    plans = build_agent_plans(
+        warehouse,
+        definition.agent_count,
+        definition.tasks,
+        variant.mode,
+        variant.station_mode,
+        variant.strategy,
+        variant.algorithm,
+    )
     print("[3/4] Route planning finished")
 
     output_path = None if args.no_gif else Path(args.output)
@@ -308,7 +418,7 @@ def main() -> None:
             debug_frames_dir=debug_frames_dir,
         )
 
-    print_summary(plans, makespan, output_path, station_mode, not args.no_gif, debug_frames_dir)
+    print_summary(plans, makespan, output_path, variant.station_mode, not args.no_gif, debug_frames_dir)
 
 
 if __name__ == "__main__":

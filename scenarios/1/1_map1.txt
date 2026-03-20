@@ -1,10 +1,10 @@
-﻿Agents: 20
+Agents: 20
 Tasks: 50
-Mode: Available
-Station: Set
-Strategy: Robin
-Algorithm: A*
 Layout: 1
+Mode: [Set,Available]
+Station: [Set,Available]
+Strategy: [FCFS,Robin,GreedyCost]
+Algorithm: [A*,SIPP,BFS]
 
 Task Agent Location Time Deadline
 1 0 64 0 60
@@ -57,4 +57,3 @@ Task Agent Location Time Deadline
 48 7 77 75 140
 49 8 186 80 145
 50 9 312 80 145
-

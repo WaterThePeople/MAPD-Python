@@ -24,3 +24,22 @@ class AgentPlan:
     pickup_times: dict[int, int]
     completion_times: dict[int, int]
     missed_deadlines: list[int]
+
+
+@dataclass(frozen=True)
+class ScenarioDefinition:
+    agent_count: int
+    tasks: list[Task]
+    layout_id: int
+    modes: list[str]
+    station_modes: list[str]
+    strategies: list[str]
+    algorithms: list[str]
+
+
+@dataclass(frozen=True)
+class ScenarioVariant:
+    mode: str
+    station_mode: str
+    strategy: str
+    algorithm: str

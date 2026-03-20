@@ -1,10 +1,10 @@
-﻿Agents: 20
+Agents: 20
 Tasks: 100
-Mode: Set
-Station: Available
-Strategy: None
-Algorithm: SIPP
 Layout: 0
+Mode: [Set,Available]
+Station: [Set,Available]
+Strategy: [FCFS,Robin,GreedyCost]
+Algorithm: [A*,SIPP,BFS]
 
 Task Agent Location Time Deadline
 1 0 348 0 70
@@ -107,4 +107,3 @@ Task Agent Location Time Deadline
 98 17 216 150 220
 99 18 87 150 220
 100 19 315 150 220
-
