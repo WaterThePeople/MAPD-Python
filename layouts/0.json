@@ -1,7 +1,6 @@
 {
   "width": 30,
   "height": 14,
-  "type":"square",
   "stations": [
     { "from": [2, 2], "to": [3, 11] }
   ],

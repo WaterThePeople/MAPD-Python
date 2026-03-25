@@ -31,6 +31,7 @@ class ScenarioDefinition:
     agent_count: int
     tasks: list[Task]
     layout_id: int
+    layout_types: list[str]
     modes: list[str]
     station_modes: list[str]
     strategies: list[str]
@@ -39,6 +40,7 @@ class ScenarioDefinition:
 
 @dataclass(frozen=True)
 class ScenarioVariant:
+    layout_type: str
     mode: str
     station_mode: str
     strategy: str

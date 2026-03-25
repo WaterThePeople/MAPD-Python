@@ -1,7 +1,6 @@
 {
   "width": 30,
   "height": 14,
-  "type":"hexagon",
   "stations": [
     { "from": [1, 2], "to": [1, 11] },
     { "from": [28, 2], "to": [28, 11] }

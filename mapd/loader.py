@@ -21,46 +21,29 @@ def detect_layout_type(path: Path, default: str | None = "square") -> str:
         lowered = part.lower()
         if lowered in WarehouseMap.SUPPORTED_LAYOUT_TYPES:
             return lowered
-
-    if path.suffix.lower() == ".json":
-        raw_layout = json.loads(path.read_text(encoding="utf-8"))
-        if isinstance(raw_layout, dict):
-            type_value = raw_layout.get("type")
-            if isinstance(type_value, str):
-                return normalize_layout_type(type_value)
-
     return normalize_layout_type(default)
 
 
-def load_layout(path: Path) -> WarehouseMap:
+def load_layout(path: Path, layout_type: str = "square") -> WarehouseMap:
+    resolved_layout_type = detect_layout_type(path, default=layout_type)
     if path.suffix.lower() == ".json":
-        return _load_layout_from_json(path)
+        return _load_layout_from_json(path, resolved_layout_type)
 
     rows = []
     for line in path.read_text(encoding="utf-8").splitlines():
         stripped = line.strip()
         if stripped:
             rows.append(stripped)
-    return WarehouseMap(rows, layout_type=detect_layout_type(path))
+    return WarehouseMap(rows, layout_type=resolved_layout_type)
 
 
-def layout_path(layout_id: int, layout_type: str = "square", layouts_root: Path | None = None) -> Path:
-    normalized_layout_type = normalize_layout_type(layout_type)
+def layout_path(layout_id: int, layout_type: str | None = None, layouts_root: Path | None = None) -> Path:
+    normalized_layout_type = normalize_layout_type(layout_type) if layout_type is not None else None
     root = Path("layouts") if layouts_root is None else layouts_root
-    layout_dir = root / normalized_layout_type / str(layout_id)
     for suffix in (".json", ".txt"):
-        candidate = layout_dir / f"{layout_id}{suffix}"
+        candidate = root / f"{layout_id}{suffix}"
         if candidate.exists():
             return candidate
-
-    if layout_dir.is_dir():
-        layout_files = sorted(layout_dir.glob("*.json"))
-        if len(layout_files) == 1:
-            return layout_files[0]
-
-        text_files = sorted(layout_dir.glob("*.txt"))
-        if len(text_files) == 1:
-            return text_files[0]
 
     legacy_layout_dir = root / str(layout_id)
     for suffix in (".json", ".txt"):
@@ -77,20 +60,29 @@ def layout_path(layout_id: int, layout_type: str = "square", layouts_root: Path 
         if len(text_files) == 1:
             return text_files[0]
 
-    raise FileNotFoundError(f"Layout {layout_id} of type '{normalized_layout_type}' not found under {root}.")
+    if normalized_layout_type is not None:
+        typed_layout_dir = root / normalized_layout_type / str(layout_id)
+        for suffix in (".json", ".txt"):
+            candidate = typed_layout_dir / f"{layout_id}{suffix}"
+            if candidate.exists():
+                return candidate
+
+        if typed_layout_dir.is_dir():
+            layout_files = sorted(typed_layout_dir.glob("*.json"))
+            if len(layout_files) == 1:
+                return layout_files[0]
+
+            text_files = sorted(typed_layout_dir.glob("*.txt"))
+            if len(text_files) == 1:
+                return text_files[0]
+
+    raise FileNotFoundError(f"Layout {layout_id} not found under {root}.")
 
 
-def _load_layout_from_json(path: Path) -> WarehouseMap:
+def _load_layout_from_json(path: Path, layout_type: str) -> WarehouseMap:
     raw_layout = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(raw_layout, dict):
         raise ValueError(f"Layout JSON must be an object: {path}")
-
-    layout_type_from_path = None
-    for part in reversed(path.parts):
-        lowered = part.lower()
-        if lowered in WarehouseMap.SUPPORTED_LAYOUT_TYPES:
-            layout_type_from_path = lowered
-            break
 
     width = raw_layout.get("width")
     height = raw_layout.get("height")
@@ -104,22 +96,11 @@ def _load_layout_from_json(path: Path) -> WarehouseMap:
     if not isinstance(stations, list) or not isinstance(shelves, list):
         raise ValueError(f"Layout JSON must define 'stations' and 'shelves' arrays: {path}")
 
-    type_value = raw_layout.get("type")
-    if type_value is None and layout_type_from_path is not None:
-        layout_type = layout_type_from_path
-    else:
-        layout_type = normalize_layout_type(type_value)
-
-    if layout_type_from_path is not None and layout_type != layout_type_from_path:
-        raise ValueError(
-            f"Layout type mismatch for {path}: JSON declares '{layout_type}', directory implies '{layout_type_from_path}'."
-        )
-
     grid = [["E" for _ in range(width)] for _ in range(height)]
     _fill_areas(grid, shelves, width, height, "#", "shelves", path)
     _fill_areas(grid, stations, width, height, "S", "stations", path)
     rows = ["".join(row) for row in grid]
-    return WarehouseMap(rows, layout_type=layout_type)
+    return WarehouseMap(rows, layout_type=normalize_layout_type(layout_type))
 
 
 def _fill_areas(
@@ -243,6 +224,7 @@ def load_scenario_definition(path: Path) -> ScenarioDefinition:
     station_match = re.search(r"Station:\s*([^\r\n]+)", text)
     strategy_match = re.search(r"Strategy:\s*([^\r\n]+)", text)
     algorithm_match = re.search(r"Algorithm:\s*([^\r\n]+)", text)
+    type_match = re.search(r"Type:\s*([^\r\n]+)", text)
     layout_match = re.search(r"Layout:\s*(\d+)", text)
     if not agents_match or not tasks_match or not mode_match or not station_match or not strategy_match:
         raise ValueError(
@@ -259,6 +241,10 @@ def load_scenario_definition(path: Path) -> ScenarioDefinition:
         algorithms = _parse_choices(algorithm_match.group(1), normalize_algorithm_name)
     else:
         algorithms = ["BFS"]
+    if type_match is not None:
+        layout_types = _parse_choices(type_match.group(1), normalize_layout_type)
+    else:
+        layout_types = ["square"]
 
     if layout_match is not None:
         layout_id = int(layout_match.group(1))
@@ -298,6 +284,7 @@ def load_scenario_definition(path: Path) -> ScenarioDefinition:
         agent_count=agent_count,
         tasks=tasks,
         layout_id=layout_id,
+        layout_types=layout_types,
         modes=modes,
         station_modes=station_modes,
         strategies=strategies,
@@ -307,30 +294,37 @@ def load_scenario_definition(path: Path) -> ScenarioDefinition:
 
 def expand_scenario_variants(definition: ScenarioDefinition) -> list[ScenarioVariant]:
     variants: list[ScenarioVariant] = []
-    for mode in definition.modes:
-        strategies = ["None"] if mode == "Set" else definition.strategies
-        for station_mode in definition.station_modes:
-            for algorithm in definition.algorithms:
-                for strategy in strategies:
-                    variant = ScenarioVariant(
-                        mode=mode,
-                        station_mode=station_mode,
-                        strategy=strategy,
-                        algorithm=algorithm,
-                    )
-                    if variant not in variants:
-                        variants.append(variant)
+    for layout_type in definition.layout_types:
+        for mode in definition.modes:
+            strategies = ["None"] if mode == "Set" else definition.strategies
+            for station_mode in definition.station_modes:
+                for algorithm in definition.algorithms:
+                    for strategy in strategies:
+                        variant = ScenarioVariant(
+                            layout_type=layout_type,
+                            mode=mode,
+                            station_mode=station_mode,
+                            strategy=strategy,
+                            algorithm=algorithm,
+                        )
+                        if variant not in variants:
+                            variants.append(variant)
     return variants
 
 
 def resolve_scenario_variant(
     definition: ScenarioDefinition,
     *,
+    layout_type: str | None = None,
     mode: str | None = None,
     station_mode: str | None = None,
     strategy: str | None = None,
     algorithm: str | None = None,
 ) -> ScenarioVariant:
+    resolved_layout_type = normalize_layout_type(layout_type) if layout_type is not None else definition.layout_types[0]
+    if resolved_layout_type not in definition.layout_types:
+        raise ValueError(f"Layout type '{resolved_layout_type}' is not allowed by this scenario.")
+
     resolved_mode = _normalize_mode(mode) if mode is not None else definition.modes[0]
     if resolved_mode not in definition.modes:
         raise ValueError(f"Mode '{resolved_mode}' is not allowed by this scenario.")
@@ -347,6 +341,7 @@ def resolve_scenario_variant(
 
     if resolved_mode == "Set":
         return ScenarioVariant(
+            layout_type=resolved_layout_type,
             mode=resolved_mode,
             station_mode=resolved_station,
             strategy="None",
@@ -358,6 +353,7 @@ def resolve_scenario_variant(
         raise ValueError(f"Strategy '{resolved_strategy}' is not allowed by this scenario.")
 
     return ScenarioVariant(
+        layout_type=resolved_layout_type,
         mode=resolved_mode,
         station_mode=resolved_station,
         strategy=resolved_strategy,
