@@ -72,7 +72,7 @@ class SIPPAlgorithm:
             raise RuntimeError(f"SIPP could not start from reserved cell {start} at time {start_time}.")
 
         def heuristic(coord: Coord) -> int:
-            return min(abs(coord[0] - goal[0]) + abs(coord[1] - goal[1]) for goal in goals)
+            return min(warehouse.distance(coord, goal) for goal in goals)
 
         def coord_priority(coord: Coord) -> int:
             return -warehouse.coord_to_index(coord)

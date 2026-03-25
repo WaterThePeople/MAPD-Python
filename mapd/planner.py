@@ -49,14 +49,10 @@ def build_color_palette(count: int) -> list[tuple[int, int, int]]:
     return palette
 
 
-def manhattan_distance(src: Coord, dst: Coord) -> int:
-    return abs(src[0] - dst[0]) + abs(src[1] - dst[1])
-
-
-def goal_heuristic(coord: Coord, goals: set[Coord]) -> int:
+def goal_heuristic(warehouse: WarehouseMap, coord: Coord, goals: set[Coord]) -> int:
     if not goals:
         return 0
-    return min(manhattan_distance(coord, goal) for goal in goals)
+    return min(warehouse.distance(coord, goal) for goal in goals)
 
 
 def descending_coord_priority(warehouse: WarehouseMap, coord: Coord) -> int:
@@ -138,7 +134,7 @@ def find_path(
         start=(start, start_time),
         is_goal=is_goal,
         neighbors=neighbors,
-        heuristic=lambda state: goal_heuristic(state[0], goals),
+        heuristic=lambda state: goal_heuristic(warehouse, state[0], goals),
         tie_breaker=lambda state: descending_coord_priority(warehouse, state[0]),
     )
 
@@ -257,7 +253,7 @@ def shortest_distance(
         start=start,
         is_goal=lambda coord: coord in goals,
         neighbors=lambda coord: [next_coord for next_coord in warehouse.neighbors(coord) if next_coord not in blocked_cells],
-        heuristic=lambda coord: goal_heuristic(coord, goals),
+        heuristic=lambda coord: goal_heuristic(warehouse, coord, goals),
         tie_breaker=lambda coord: descending_coord_priority(warehouse, coord),
     )
 

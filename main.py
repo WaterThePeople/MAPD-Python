@@ -3,10 +3,12 @@ import re
 from pathlib import Path
 
 from mapd.loader import (
+    detect_layout_type,
     expand_scenario_variants,
     layout_path,
     load_layout,
     load_scenario_definition,
+    normalize_layout_type,
     resolve_scenario_variant,
 )
 from mapd.planner import build_agent_plans
@@ -28,8 +30,14 @@ def parse_args() -> argparse.Namespace:
         "--layout",
         help=(
             "Optional layout path (.json/.txt) or numeric layout id for a single scenario run. "
-            "If omitted, the scenario's Layout value is used."
+            "If omitted, the scenario's Layout value is used together with --layout-type."
         ),
+    )
+    parser.add_argument(
+        "--layout-type",
+        default="square",
+        choices=["square", "hexagon"],
+        help="Layout family to use when resolving numeric layout ids. Defaults to square.",
     )
     parser.add_argument(
         "--scenario",
@@ -213,20 +221,40 @@ def variant_filename_token(value: str) -> str:
     return token_map[value]
 
 
-def variant_label(scenario_label: str, mode: str, station_mode: str, strategy: str, algorithm: str) -> str:
+def variant_label(
+    scenario_label: str,
+    layout_type: str,
+    mode: str,
+    station_mode: str,
+    strategy: str,
+    algorithm: str,
+) -> str:
     return (
-        f"{scenario_label}_{variant_filename_token(mode)}_{variant_filename_token(station_mode)}_"
+        f"{layout_type}_{scenario_label}_{variant_filename_token(mode)}_{variant_filename_token(station_mode)}_"
         f"{variant_filename_token(strategy)}_{variant_filename_token(algorithm)}"
     )
 
 
-def resolve_layout_reference(layout_arg: str | None, scenario_layout_id: int) -> tuple[int, Path]:
+def resolve_layout_reference(
+    layout_arg: str | None,
+    scenario_layout_id: int,
+    layout_type: str,
+) -> tuple[int, Path, str]:
+    normalized_layout_type = normalize_layout_type(layout_type)
     if layout_arg is None:
-        return scenario_layout_id, layout_path(scenario_layout_id)
+        return (
+            scenario_layout_id,
+            layout_path(scenario_layout_id, normalized_layout_type),
+            normalized_layout_type,
+        )
 
     if layout_arg.isdigit():
         override_layout_id = int(layout_arg)
-        return override_layout_id, layout_path(override_layout_id)
+        return (
+            override_layout_id,
+            layout_path(override_layout_id, normalized_layout_type),
+            normalized_layout_type,
+        )
 
     override_path = Path(layout_arg)
     if not override_path.exists():
@@ -234,7 +262,8 @@ def resolve_layout_reference(layout_arg: str | None, scenario_layout_id: int) ->
 
     layout_id_match = re.search(r"(\d+)(?=\.(?:json|txt)$)", override_path.name, re.IGNORECASE)
     layout_id = int(layout_id_match.group(1)) if layout_id_match else scenario_layout_id
-    return layout_id, override_path
+    resolved_layout_type = detect_layout_type(override_path, default=normalized_layout_type)
+    return layout_id, override_path, resolved_layout_type
 
 
 def run_simulation(
@@ -272,6 +301,7 @@ def run_simulation(
 
 def main() -> None:
     args = parse_args()
+    requested_layout_type = normalize_layout_type(args.layout_type)
 
     if args.scenario_suite:
         suite_name, scenario_paths = derive_suite_paths(args.scenario_suite)
@@ -286,12 +316,20 @@ def main() -> None:
         for scenario_path in scenario_paths:
             print(f"[2/4] Loading scenario from {scenario_path}")
             definition = load_scenario_definition(scenario_path)
-            resolved_layout_id, resolved_layout_path = resolve_layout_reference(None, definition.layout_id)
+            resolved_layout_id, resolved_layout_path, resolved_layout_type = resolve_layout_reference(
+                None,
+                definition.layout_id,
+                requested_layout_type,
+            )
             warehouse = load_layout(resolved_layout_path)
-            print(f"[2/4] Layout loaded from {resolved_layout_path}: {warehouse.width}x{warehouse.height}")
+            print(
+                f"[2/4] Layout loaded from {resolved_layout_path}: "
+                f"{warehouse.width}x{warehouse.height} ({resolved_layout_type}/{resolved_layout_id})"
+            )
             for variant in expand_scenario_variants(definition):
                 scenario_variant_label = variant_label(
                     scenario_path.stem,
+                    resolved_layout_type,
                     variant.mode,
                     variant.station_mode,
                     variant.strategy,
@@ -301,7 +339,7 @@ def main() -> None:
                 print(
                     f"[2/4] Scenario variant: {definition.agent_count} agents, {len(definition.tasks)} tasks, "
                     f"mode={variant.mode}, station={variant.station_mode}, strategy={variant.strategy}, "
-                    f"algorithm={variant.algorithm}, layout={resolved_layout_id}"
+                    f"algorithm={variant.algorithm}, layout={resolved_layout_type}/{resolved_layout_id}"
                 )
                 makespan, plans = run_simulation(
                     warehouse,
@@ -321,6 +359,7 @@ def main() -> None:
                 tasks_rows.extend(
                     build_tasks_rows(
                         suite_name,
+                        resolved_layout_type,
                         resolved_layout_id,
                         variant.strategy,
                         variant.algorithm,
@@ -332,6 +371,7 @@ def main() -> None:
                 summary_rows.extend(
                     build_summary_rows(
                         suite_name,
+                        resolved_layout_type,
                         resolved_layout_id,
                         variant.strategy,
                         variant.algorithm,
@@ -342,6 +382,7 @@ def main() -> None:
                 comparison_rows.append(
                     build_comparison_row(
                         suite_name,
+                        resolved_layout_type,
                         resolved_layout_id,
                         variant.strategy,
                         variant.algorithm,
@@ -351,7 +392,7 @@ def main() -> None:
                     )
                 )
 
-        results_path = Path(args.results_dir) / f"{suite_name}_results.xlsx"
+        results_path = Path(args.results_dir) / f"{suite_name}_{requested_layout_type}_results.xlsx"
         write_xlsx_workbook(
             results_path,
             [
@@ -376,13 +417,20 @@ def main() -> None:
     print(
         f"[1/4] Scenario loaded: {definition.agent_count} agents, {len(definition.tasks)} tasks, "
         f"mode={variant.mode}, station={variant.station_mode}, strategy={variant.strategy}, "
-        f"algorithm={variant.algorithm}, layout={definition.layout_id}"
+        f"algorithm={variant.algorithm}, layout={requested_layout_type}/{definition.layout_id}"
     )
 
-    resolved_layout_id, resolved_layout_path = resolve_layout_reference(args.layout, definition.layout_id)
+    resolved_layout_id, resolved_layout_path, resolved_layout_type = resolve_layout_reference(
+        args.layout,
+        definition.layout_id,
+        requested_layout_type,
+    )
     print(f"[2/4] Loading layout from {resolved_layout_path}")
     warehouse = load_layout(resolved_layout_path)
-    print(f"[2/4] Layout loaded: {warehouse.width}x{warehouse.height} (layout={resolved_layout_id})")
+    print(
+        f"[2/4] Layout loaded: {warehouse.width}x{warehouse.height} "
+        f"(layout={resolved_layout_type}/{resolved_layout_id})"
+    )
 
     print("[3/4] Planning collision-free routes")
     plans = build_agent_plans(

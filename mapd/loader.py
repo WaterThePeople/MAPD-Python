@@ -7,6 +7,31 @@ from mapd.models import ScenarioDefinition, ScenarioVariant, Task
 from mapd.warehouse import WarehouseMap
 
 
+def normalize_layout_type(value: str | None) -> str:
+    normalized = "square" if value is None else value.strip().lower()
+    if normalized not in WarehouseMap.SUPPORTED_LAYOUT_TYPES:
+        raise ValueError(
+            f"Unsupported layout type: {value}. Expected one of {sorted(WarehouseMap.SUPPORTED_LAYOUT_TYPES)}."
+        )
+    return normalized
+
+
+def detect_layout_type(path: Path, default: str | None = "square") -> str:
+    for part in reversed(path.parts):
+        lowered = part.lower()
+        if lowered in WarehouseMap.SUPPORTED_LAYOUT_TYPES:
+            return lowered
+
+    if path.suffix.lower() == ".json":
+        raw_layout = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(raw_layout, dict):
+            type_value = raw_layout.get("type")
+            if isinstance(type_value, str):
+                return normalize_layout_type(type_value)
+
+    return normalize_layout_type(default)
+
+
 def load_layout(path: Path) -> WarehouseMap:
     if path.suffix.lower() == ".json":
         return _load_layout_from_json(path)
@@ -16,12 +41,13 @@ def load_layout(path: Path) -> WarehouseMap:
         stripped = line.strip()
         if stripped:
             rows.append(stripped)
-    return WarehouseMap(rows)
+    return WarehouseMap(rows, layout_type=detect_layout_type(path))
 
 
-def layout_path(layout_id: int, layouts_root: Path | None = None) -> Path:
+def layout_path(layout_id: int, layout_type: str = "square", layouts_root: Path | None = None) -> Path:
+    normalized_layout_type = normalize_layout_type(layout_type)
     root = Path("layouts") if layouts_root is None else layouts_root
-    layout_dir = root / str(layout_id)
+    layout_dir = root / normalized_layout_type / str(layout_id)
     for suffix in (".json", ".txt"):
         candidate = layout_dir / f"{layout_id}{suffix}"
         if candidate.exists():
@@ -36,13 +62,35 @@ def layout_path(layout_id: int, layouts_root: Path | None = None) -> Path:
         if len(text_files) == 1:
             return text_files[0]
 
-    raise FileNotFoundError(f"Layout {layout_id} not found under {root}.")
+    legacy_layout_dir = root / str(layout_id)
+    for suffix in (".json", ".txt"):
+        candidate = legacy_layout_dir / f"{layout_id}{suffix}"
+        if candidate.exists():
+            return candidate
+
+    if legacy_layout_dir.is_dir():
+        layout_files = sorted(legacy_layout_dir.glob("*.json"))
+        if len(layout_files) == 1:
+            return layout_files[0]
+
+        text_files = sorted(legacy_layout_dir.glob("*.txt"))
+        if len(text_files) == 1:
+            return text_files[0]
+
+    raise FileNotFoundError(f"Layout {layout_id} of type '{normalized_layout_type}' not found under {root}.")
 
 
 def _load_layout_from_json(path: Path) -> WarehouseMap:
     raw_layout = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(raw_layout, dict):
         raise ValueError(f"Layout JSON must be an object: {path}")
+
+    layout_type_from_path = None
+    for part in reversed(path.parts):
+        lowered = part.lower()
+        if lowered in WarehouseMap.SUPPORTED_LAYOUT_TYPES:
+            layout_type_from_path = lowered
+            break
 
     width = raw_layout.get("width")
     height = raw_layout.get("height")
@@ -56,11 +104,22 @@ def _load_layout_from_json(path: Path) -> WarehouseMap:
     if not isinstance(stations, list) or not isinstance(shelves, list):
         raise ValueError(f"Layout JSON must define 'stations' and 'shelves' arrays: {path}")
 
+    type_value = raw_layout.get("type")
+    if type_value is None and layout_type_from_path is not None:
+        layout_type = layout_type_from_path
+    else:
+        layout_type = normalize_layout_type(type_value)
+
+    if layout_type_from_path is not None and layout_type != layout_type_from_path:
+        raise ValueError(
+            f"Layout type mismatch for {path}: JSON declares '{layout_type}', directory implies '{layout_type_from_path}'."
+        )
+
     grid = [["E" for _ in range(width)] for _ in range(height)]
     _fill_areas(grid, shelves, width, height, "#", "shelves", path)
     _fill_areas(grid, stations, width, height, "S", "stations", path)
     rows = ["".join(row) for row in grid]
-    return WarehouseMap(rows)
+    return WarehouseMap(rows, layout_type=layout_type)
 
 
 def _fill_areas(

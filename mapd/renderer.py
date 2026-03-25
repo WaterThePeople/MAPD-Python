@@ -1,23 +1,33 @@
+import math
 from collections import defaultdict
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
 
-from mapd.models import AgentPlan
+from mapd.models import AgentPlan, Coord
 from mapd.warehouse import WarehouseMap
 
 
-def draw_cross(draw: ImageDraw.ImageDraw, left: int, top: int, cell_size: int, color: tuple[int, int, int]) -> None:
-    padding = max(6, cell_size // 5)
-    right = left + cell_size
-    bottom = top + cell_size
+HEX_ASPECT_RATIO = 0.8660254
+HEX_VERTICAL_STEP_RATIO = 0.75
+HEX_GAP = 3
+
+
+def draw_cross(
+    draw: ImageDraw.ImageDraw,
+    bounds: tuple[float, float, float, float],
+    color: tuple[int, int, int],
+) -> None:
+    left, top, right, bottom = bounds
+    size = min(right - left, bottom - top)
+    padding = max(6, int(size // 5))
     draw.line((left + padding, top + padding, right - padding, bottom - padding), fill=color, width=3)
     draw.line((left + padding, bottom - padding, right - padding, top + padding), fill=color, width=3)
 
 
 def draw_centered_text(
     draw: ImageDraw.ImageDraw,
-    bounds: tuple[int, int, int, int],
+    bounds: tuple[float, float, float, float],
     text: str,
     fill: tuple[int, int, int],
     font,
@@ -31,38 +41,20 @@ def draw_centered_text(
     draw.text((text_x, text_y), text, fill=fill, font=font)
 
 
-def draw_station_label(
-    draw: ImageDraw.ImageDraw,
-    left: int,
-    top: int,
-    cell_size: int,
-    label: str,
-    font,
-) -> None:
-    padding = max(2, cell_size // 10)
-    draw_centered_text(
-        draw,
-        (left + padding, top + padding, left + cell_size - padding, top + cell_size - padding),
-        label,
-        (20, 110, 40),
-        font,
-    )
-
-
 def draw_agent(
     draw: ImageDraw.ImageDraw,
-    left: int,
-    top: int,
-    cell_size: int,
+    bounds: tuple[float, float, float, float],
     color: tuple[int, int, int],
     label: str | None,
     font,
 ) -> None:
-    padding = max(6, cell_size // 6)
-    circle_bounds = (left + padding, top + padding, left + cell_size - padding, top + cell_size - padding)
+    left, top, right, bottom = bounds
+    size = min(right - left, bottom - top)
+    padding = max(6, int(size // 6))
+    circle_bounds = (left + padding, top + padding, right - padding, bottom - padding)
     draw.ellipse(circle_bounds, fill=color, outline=(20, 20, 20), width=2)
     if label:
-        draw_centered_text(draw, (left, top, left + cell_size, top + cell_size), label, (255, 255, 255), font)
+        draw_centered_text(draw, (left, top, right, bottom), label, (255, 255, 255), font)
 
 
 def progress_points(total_frames: int) -> set[int]:
@@ -110,6 +102,169 @@ def carried_task_id(plan: AgentPlan, time: int) -> str | None:
     return None
 
 
+def scale_polygon(
+    polygon: list[tuple[float, float]],
+    factor: float,
+) -> list[tuple[float, float]]:
+    center_x = sum(point[0] for point in polygon) / len(polygon)
+    center_y = sum(point[1] for point in polygon) / len(polygon)
+    return [
+        (
+            center_x + (point_x - center_x) * factor,
+            center_y + (point_y - center_y) * factor,
+        )
+        for point_x, point_y in polygon
+    ]
+
+
+def draw_polygon_outline(
+    draw: ImageDraw.ImageDraw,
+    polygon: list[tuple[float, float]],
+    color: tuple[int, int, int],
+    width: int = 1,
+) -> None:
+    draw.line([*polygon, polygon[0]], fill=color, width=width)
+
+
+def square_bounds(coord: Coord, cell_size: int, header_height: int) -> tuple[float, float, float, float]:
+    row, col = coord
+    left = col * cell_size
+    top = row * cell_size + header_height
+    return left, top, left + cell_size, top + cell_size
+
+
+def hex_metrics(cell_size: int) -> dict[str, float]:
+    hex_width = float(cell_size)
+    hex_height = hex_width / HEX_ASPECT_RATIO
+    step_x = hex_width + HEX_GAP
+    row_offset = step_x / 2
+    step_y = hex_height * HEX_VERTICAL_STEP_RATIO + HEX_GAP
+    return {
+        "hex_width": hex_width,
+        "hex_height": hex_height,
+        "step_x": step_x,
+        "row_offset": row_offset,
+        "step_y": step_y,
+        "padding": float(HEX_GAP),
+    }
+
+
+def hex_bounds(coord: Coord, cell_size: int, header_height: int) -> tuple[float, float, float, float]:
+    row, col = coord
+    metrics = hex_metrics(cell_size)
+    left = metrics["padding"] + col * metrics["step_x"] + (row % 2) * metrics["row_offset"]
+    top = header_height + metrics["padding"] + row * metrics["step_y"]
+    return left, top, left + metrics["hex_width"], top + metrics["hex_height"]
+
+
+def hex_polygon(coord: Coord, cell_size: int, header_height: int) -> list[tuple[float, float]]:
+    left, top, right, bottom = hex_bounds(coord, cell_size, header_height)
+    width = right - left
+    height = bottom - top
+    return [
+        (left + width * 0.5, top),
+        (left + width * 0.933, top + height * 0.25),
+        (left + width * 0.933, top + height * 0.75),
+        (left + width * 0.5, bottom),
+        (left + width * 0.067, top + height * 0.75),
+        (left + width * 0.067, top + height * 0.25),
+    ]
+
+
+def cell_bounds(warehouse: WarehouseMap, coord: Coord, cell_size: int, header_height: int) -> tuple[float, float, float, float]:
+    if warehouse.layout_type == "hexagon":
+        return hex_bounds(coord, cell_size, header_height)
+    return square_bounds(coord, cell_size, header_height)
+
+
+def render_dimensions(warehouse: WarehouseMap, cell_size: int) -> tuple[int, int, int]:
+    if warehouse.layout_type == "hexagon":
+        metrics = hex_metrics(cell_size)
+        board_width = (
+            metrics["padding"] * 2
+            + (warehouse.width - 1) * metrics["step_x"]
+            + metrics["hex_width"]
+            + metrics["row_offset"]
+        )
+        board_height = (
+            metrics["padding"] * 2
+            + (warehouse.height - 1) * metrics["step_y"]
+            + metrics["hex_height"]
+        )
+        header_height = max(36, cell_size)
+        return int(math.ceil(board_width)), int(math.ceil(board_height)), header_height
+
+    board_width = warehouse.width * cell_size
+    board_height = warehouse.height * cell_size
+    header_height = max(36, cell_size)
+    return board_width, board_height, header_height
+
+
+def draw_square_cell(
+    draw: ImageDraw.ImageDraw,
+    cell: str,
+    coord: Coord,
+    cell_size: int,
+    header_height: int,
+    grid_color: tuple[int, int, int],
+    station_outline: tuple[int, int, int],
+) -> None:
+    left, top, right, bottom = square_bounds(coord, cell_size, header_height)
+
+    if cell == "#":
+        draw.rectangle((left, top, right, bottom), fill=(0, 0, 0), outline=(35, 35, 35), width=1)
+    elif cell == "S":
+        draw.rectangle((left, top, right, bottom), fill=(255, 255, 255), outline=grid_color, width=1)
+        inset = max(3, cell_size // 10)
+        draw.rectangle(
+            (left + inset, top + inset, right - inset, bottom - inset),
+            fill=(255, 255, 255),
+            outline=station_outline,
+            width=3,
+        )
+    else:
+        draw.rectangle((left, top, right, bottom), fill=(255, 255, 255), outline=grid_color, width=1)
+
+
+def draw_hex_cell(
+    draw: ImageDraw.ImageDraw,
+    cell: str,
+    coord: Coord,
+    cell_size: int,
+    header_height: int,
+    grid_color: tuple[int, int, int],
+    station_outline: tuple[int, int, int],
+) -> None:
+    polygon = hex_polygon(coord, cell_size, header_height)
+
+    if cell == "#":
+        draw.polygon(polygon, fill=(0, 0, 0))
+        draw_polygon_outline(draw, polygon, (35, 35, 35), width=1)
+    elif cell == "S":
+        draw.polygon(polygon, fill=(255, 255, 255))
+        draw_polygon_outline(draw, polygon, grid_color, width=1)
+        draw_polygon_outline(draw, scale_polygon(polygon, 0.82), station_outline, width=3)
+    else:
+        draw.polygon(polygon, fill=(255, 255, 255))
+        draw_polygon_outline(draw, polygon, grid_color, width=1)
+
+
+def draw_cell(
+    draw: ImageDraw.ImageDraw,
+    warehouse: WarehouseMap,
+    coord: Coord,
+    cell_size: int,
+    header_height: int,
+    grid_color: tuple[int, int, int],
+    station_outline: tuple[int, int, int],
+) -> None:
+    cell = warehouse.rows[coord[0]][coord[1]]
+    if warehouse.layout_type == "hexagon":
+        draw_hex_cell(draw, cell, coord, cell_size, header_height, grid_color, station_outline)
+        return
+    draw_square_cell(draw, cell, coord, cell_size, header_height, grid_color, station_outline)
+
+
 def render_frames(
     warehouse: WarehouseMap,
     plans: list[AgentPlan],
@@ -133,10 +288,8 @@ def render_frames(
         clear_debug_frames(debug_frames_dir)
 
     frames = [] if output_path is not None else None
-    image_width = warehouse.width * cell_size
-    image_height = warehouse.height * cell_size
-    header_height = max(36, cell_size)
-    total_height = image_height + header_height
+    board_width, board_height, header_height = render_dimensions(warehouse, cell_size)
+    total_height = board_height + header_height
     station_outline = (32, 160, 64)
     grid_color = (215, 215, 215)
     header_bg = (245, 245, 245)
@@ -147,10 +300,10 @@ def render_frames(
             percent = int(round((time / max(total_frames - 1, 1)) * 100))
             print(f"  [render] frame {time + 1}/{total_frames} ({percent}%)")
 
-        image = Image.new("RGB", (image_width, total_height), (255, 255, 255))
+        image = Image.new("RGB", (board_width, total_height), (255, 255, 255))
         draw = ImageDraw.Draw(image)
 
-        draw.rectangle((0, 0, image_width, header_height), fill=header_bg, outline=header_border, width=1)
+        draw.rectangle((0, 0, board_width, header_height), fill=header_bg, outline=header_border, width=1)
 
         done_count = 0
         missed_count = 0
@@ -161,55 +314,36 @@ def render_frames(
                 completion_time = plan.completion_times.get(task.task_id, 0)
                 if time >= completion_time:
                     done_count += 1
-                if task.deadline is not None:
-                    if time > task.deadline and completion_time > task.deadline:
-                        missed_count += 1
+                if task.deadline is not None and time > task.deadline and completion_time > task.deadline:
+                    missed_count += 1
 
         draw.text((8, 6), f"Time: {time}", fill=(30, 30, 30), font=font)
-        draw.text((8, 6 + 14), f"Done: {done_count}/{total_tasks}", fill=(30, 30, 30), font=font)
-        draw.text((8, 6 + 28), f"Missed deadlines: {missed_count}", fill=(30, 30, 30), font=font)
+        draw.text((8, 20), f"Done: {done_count}/{total_tasks}", fill=(30, 30, 30), font=font)
+        draw.text((8, 34), f"Missed deadlines: {missed_count}", fill=(30, 30, 30), font=font)
 
         for row in range(warehouse.height):
             for col in range(warehouse.width):
                 coord = (row, col)
-                left = col * cell_size
-                top = row * cell_size + header_height
-                right = left + cell_size
-                bottom = top + cell_size
-                cell = warehouse.rows[row][col]
-
-                if cell == "#":
-                    draw.rectangle((left, top, right, bottom), fill=(0, 0, 0), outline=(35, 35, 35), width=1)
-                elif cell == "S":
-                    draw.rectangle((left, top, right, bottom), fill=(255, 255, 255), outline=grid_color, width=1)
-                    inset = max(3, cell_size // 10)
-                    draw.rectangle(
-                        (left + inset, top + inset, right - inset, bottom - inset),
-                        fill=(255, 255, 255),
-                        outline=station_outline,
-                        width=3,
-                    )
-                else:
-                    draw.rectangle((left, top, right, bottom), fill=(255, 255, 255), outline=grid_color, width=1)
+                draw_cell(draw, warehouse, coord, cell_size, header_height, grid_color, station_outline)
 
                 for task in tasks_by_location.get(warehouse.coord_to_index(coord), []):
                     if package_release_times[task.task_id] <= time < package_pickups[task.task_id]:
-                        is_late = False
+                        color = plans[task.agent_id].color
                         deadline = package_deadlines[task.task_id]
                         if deadline is not None and time > deadline:
-                            is_late = True
-
-                        color = plans[task.agent_id].color
-                        if is_late:
                             color = (220, 20, 20)
-                        draw_cross(draw, left, top, cell_size, color)
+                        draw_cross(draw, cell_bounds(warehouse, coord, cell_size, header_height), color)
 
         for plan in plans:
             position = plan.path[time] if time < len(plan.path) else plan.path[-1]
-            left = position[1] * cell_size
-            top = position[0] * cell_size + header_height
             label = carried_task_id(plan, time)
-            draw_agent(draw, left, top, cell_size, plan.color, label, font)
+            draw_agent(
+                draw,
+                cell_bounds(warehouse, position, cell_size, header_height),
+                plan.color,
+                label,
+                font,
+            )
 
         if debug_frames_dir is not None:
             frame_path = debug_frames_dir / f"frame_{time:0{frame_number_width}d}.png"

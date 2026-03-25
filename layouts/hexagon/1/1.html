@@ -1,0 +1,345 @@
+<!doctype html>
+<html lang="pl">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Layout Preview</title>
+    <style>
+      :root {
+        --page-bg: #f5f0e6;
+        --text: #2f261c;
+        --muted: #776a58;
+        --empty: #efe4d2;
+        --station: #2f8f63;
+        --shelf: #a46a2a;
+        --grid-line: #ddcdb2;
+        --gap: 3px;
+        --square-size: 24px;
+        --hex-width: 28px;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        padding: 24px;
+        background:
+          radial-gradient(
+            circle at top left,
+            rgba(255, 255, 255, 0.7),
+            transparent 32%
+          ),
+          linear-gradient(135deg, #ede4d2 0%, #f8f3e8 48%, #e6d8bd 100%);
+        color: var(--text);
+        font-family: "Trebuchet MS", "Segoe UI", sans-serif;
+      }
+
+      .meta {
+        margin-bottom: 14px;
+        font-size: 0.95rem;
+        font-weight: 600;
+        letter-spacing: 0.03em;
+        color: var(--muted);
+      }
+
+      .board {
+        width: max-content;
+      }
+
+      .board.square {
+        display: grid;
+        gap: var(--gap);
+        background: var(--grid-line);
+        padding: var(--gap);
+        border-radius: 6px;
+      }
+
+      .board.hexagon {
+        position: relative;
+      }
+
+      .cell {
+        background: var(--empty);
+      }
+
+      .cell.square {
+        width: var(--square-size);
+        height: var(--square-size);
+        border-radius: 4px;
+      }
+
+      .cell.square:hover {
+        outline: 2px solid rgba(47, 38, 28, 0.35);
+        outline-offset: -2px;
+      }
+
+      .cell.hexagon {
+        position: absolute;
+        width: var(--hex-width);
+        aspect-ratio: 0.8660254;
+        clip-path: polygon(
+          50% 0%,
+          93.3% 25%,
+          93.3% 75%,
+          50% 100%,
+          6.7% 75%,
+          6.7% 25%
+        );
+        border: 1px solid rgba(119, 106, 88, 0.35);
+      }
+
+      .cell.hexagon:hover {
+        filter: brightness(1.04) drop-shadow(0 0 4px rgba(47, 38, 28, 0.22));
+      }
+
+      .cell.station {
+        background: linear-gradient(135deg, #39a272, var(--station));
+      }
+
+      .cell.shelf {
+        background: linear-gradient(135deg, #bf8643, var(--shelf));
+      }
+
+      @media (max-width: 640px) {
+        body {
+          padding: 16px;
+        }
+
+        :root {
+          --square-size: 20px;
+          --hex-width: 24px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <p class="meta" id="meta"></p>
+    <div class="board" id="board" aria-label="Siatka magazynu"></div>
+
+    <script>
+      const metaElement = document.getElementById("meta");
+      const boardElement = document.getElementById("board");
+      const layout = {
+        width: 30,
+        height: 14,
+        type: "hexagon",
+        stations: [
+          { from: [1, 2], to: [1, 11] },
+          { from: [28, 2], to: [28, 11] },
+        ],
+        shelves: [
+          { from: [4, 2], to: [13, 3] },
+          { from: [16, 2], to: [25, 3] },
+          { from: [4, 6], to: [13, 7] },
+          { from: [16, 6], to: [25, 7] },
+          { from: [4, 10], to: [13, 11] },
+          { from: [16, 10], to: [25, 11] },
+        ],
+      };
+
+      const SUPPORTED_TYPES = new Set(["square", "hexagon"]);
+
+      function isPointInside(area, x, y) {
+        const [fromX, fromY] = area.from;
+        const [toX, toY] = area.to;
+        return x >= fromX && x <= toX && y >= fromY && y <= toY;
+      }
+
+      function validateAreas(areas, width, height, label) {
+        if (!Array.isArray(areas)) {
+          throw new Error(label + " must be an array.");
+        }
+
+        areas.forEach((area, index) => {
+          if (
+            !Array.isArray(area.from) ||
+            !Array.isArray(area.to) ||
+            area.from.length !== 2 ||
+            area.to.length !== 2
+          ) {
+            throw new Error(
+              label +
+                " area " +
+                index +
+                " must contain from/to coordinate pairs.",
+            );
+          }
+
+          const [fromX, fromY] = area.from;
+          const [toX, toY] = area.to;
+          const insideBounds =
+            Number.isInteger(fromX) &&
+            Number.isInteger(fromY) &&
+            Number.isInteger(toX) &&
+            Number.isInteger(toY) &&
+            fromX >= 0 &&
+            fromY >= 0 &&
+            toX < width &&
+            toY < height &&
+            fromX <= toX &&
+            fromY <= toY;
+
+          if (!insideBounds) {
+            throw new Error(
+              label + " area " + index + " is outside layout bounds.",
+            );
+          }
+        });
+      }
+
+      function validateLayout(layout) {
+        if (
+          !layout ||
+          !Number.isInteger(layout.width) ||
+          !Number.isInteger(layout.height)
+        ) {
+          throw new Error("Layout must define integer width and height.");
+        }
+
+        if (
+          typeof layout.type !== "string" ||
+          !SUPPORTED_TYPES.has(layout.type)
+        ) {
+          throw new Error(
+            "Layout must define supported type: square or hexagon.",
+          );
+        }
+
+        if (layout.width <= 0 || layout.height <= 0) {
+          throw new Error("Layout width and height must be positive.");
+        }
+
+        validateAreas(layout.stations, layout.width, layout.height, "stations");
+        validateAreas(layout.shelves, layout.width, layout.height, "shelves");
+      }
+
+      function cellType(layout, x, y) {
+        if (layout.stations.some((area) => isPointInside(area, x, y))) {
+          return "station";
+        }
+
+        if (layout.shelves.some((area) => isPointInside(area, x, y))) {
+          return "shelf";
+        }
+
+        return "empty";
+      }
+
+      function renderMeta(layout) {
+        metaElement.textContent =
+          "Szerokosc: " +
+          layout.width +
+          " | Wysokosc: " +
+          layout.height +
+          " | Typ: " +
+          layout.type +
+          " | Stacje: " +
+          layout.stations.length +
+          " | Polki: " +
+          layout.shelves.length;
+      }
+
+      function createCell(layout, x, y, shape) {
+        const cell = document.createElement("div");
+        const type = cellType(layout, x, y);
+        cell.className = "cell " + shape + (type === "empty" ? "" : " " + type);
+        cell.title = "x: " + x + ", y: " + y;
+        cell.setAttribute("aria-label", "Komorka x: " + x + ", y: " + y);
+        return cell;
+      }
+
+      function renderSquareBoard(layout) {
+        boardElement.innerHTML = "";
+        boardElement.className = "board square";
+        boardElement.style.width = "";
+        boardElement.style.height = "";
+        boardElement.style.gridTemplateColumns =
+          "repeat(" + layout.width + ", var(--square-size))";
+
+        for (let y = 0; y < layout.height; y += 1) {
+          for (let x = 0; x < layout.width; x += 1) {
+            boardElement.appendChild(createCell(layout, x, y, "square"));
+          }
+        }
+      }
+
+      function getHexMetrics(layout) {
+        const rootStyles = getComputedStyle(document.documentElement);
+        const hexWidth =
+          parseFloat(rootStyles.getPropertyValue("--hex-width")) || 28;
+        const gap = parseFloat(rootStyles.getPropertyValue("--gap")) || 3;
+        const hexHeight = hexWidth / 0.8660254;
+        const stepX = hexWidth + gap;
+        const stepY = hexHeight * 0.75 + gap;
+        const rowOffset = stepX / 2;
+        const paddingX = gap;
+        const paddingY = gap;
+        const totalWidth =
+          paddingX * 2 + stepX * (layout.width - 1) + hexWidth + rowOffset;
+        const totalHeight =
+          paddingY * 2 + stepY * (layout.height - 1) + hexHeight;
+
+        return {
+          hexWidth,
+          hexHeight,
+          stepX,
+          stepY,
+          rowOffset,
+          paddingX,
+          paddingY,
+          totalWidth,
+          totalHeight,
+        };
+      }
+
+      function renderHexagonBoard(layout) {
+        boardElement.innerHTML = "";
+        boardElement.className = "board hexagon";
+
+        const metrics = getHexMetrics(layout);
+        boardElement.style.width = metrics.totalWidth + "px";
+        boardElement.style.height = metrics.totalHeight + "px";
+
+        for (let y = 0; y < layout.height; y += 1) {
+          for (let x = 0; x < layout.width; x += 1) {
+            const cell = createCell(layout, x, y, "hexagon");
+            cell.style.left =
+              metrics.paddingX +
+              x * metrics.stepX +
+              (y % 2 === 1 ? metrics.rowOffset : 0) +
+              "px";
+            cell.style.top = metrics.paddingY + y * metrics.stepY + "px";
+            boardElement.appendChild(cell);
+          }
+        }
+      }
+
+      function renderBoard(layout) {
+        if (layout.type === "hexagon") {
+          renderHexagonBoard(layout);
+          return;
+        }
+
+        renderSquareBoard(layout);
+      }
+
+      function initializeLayout() {
+        try {
+          validateLayout(layout);
+          renderMeta(layout);
+          renderBoard(layout);
+          document.title = "1 layout";
+        } catch (error) {
+          metaElement.textContent =
+            "Blad: nie udalo sie zainicjalizowac layoutu.";
+          console.error(error);
+        }
+      }
+
+      initializeLayout();
+    </script>
+  </body>
+</html>
