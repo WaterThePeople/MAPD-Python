@@ -1,3 +1,4 @@
+import json
 import re
 from pathlib import Path
 
@@ -7,6 +8,9 @@ from mapd.warehouse import WarehouseMap
 
 
 def load_layout(path: Path) -> WarehouseMap:
+    if path.suffix.lower() == ".json":
+        return _load_layout_from_json(path)
+
     rows = []
     for line in path.read_text(encoding="utf-8").splitlines():
         stripped = line.strip()
@@ -17,17 +21,108 @@ def load_layout(path: Path) -> WarehouseMap:
 
 def layout_path(layout_id: int, layouts_root: Path | None = None) -> Path:
     root = Path("layouts") if layouts_root is None else layouts_root
-    candidate = root / str(layout_id) / f"{layout_id}.txt"
-    if candidate.exists():
-        return candidate
-
     layout_dir = root / str(layout_id)
+    for suffix in (".json", ".txt"):
+        candidate = layout_dir / f"{layout_id}{suffix}"
+        if candidate.exists():
+            return candidate
+
     if layout_dir.is_dir():
+        layout_files = sorted(layout_dir.glob("*.json"))
+        if len(layout_files) == 1:
+            return layout_files[0]
+
         text_files = sorted(layout_dir.glob("*.txt"))
         if len(text_files) == 1:
             return text_files[0]
 
     raise FileNotFoundError(f"Layout {layout_id} not found under {root}.")
+
+
+def _load_layout_from_json(path: Path) -> WarehouseMap:
+    raw_layout = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(raw_layout, dict):
+        raise ValueError(f"Layout JSON must be an object: {path}")
+
+    width = raw_layout.get("width")
+    height = raw_layout.get("height")
+    if not isinstance(width, int) or not isinstance(height, int):
+        raise ValueError(f"Layout JSON must define integer width and height: {path}")
+    if width <= 0 or height <= 0:
+        raise ValueError(f"Layout width and height must be positive: {path}")
+
+    stations = raw_layout.get("stations")
+    shelves = raw_layout.get("shelves")
+    if not isinstance(stations, list) or not isinstance(shelves, list):
+        raise ValueError(f"Layout JSON must define 'stations' and 'shelves' arrays: {path}")
+
+    grid = [["E" for _ in range(width)] for _ in range(height)]
+    _fill_areas(grid, shelves, width, height, "#", "shelves", path)
+    _fill_areas(grid, stations, width, height, "S", "stations", path)
+    rows = ["".join(row) for row in grid]
+    return WarehouseMap(rows)
+
+
+def _fill_areas(
+    grid: list[list[str]],
+    areas: list[object],
+    width: int,
+    height: int,
+    symbol: str,
+    label: str,
+    path: Path,
+) -> None:
+    for index, area in enumerate(areas):
+        from_x, from_y, to_x, to_y = _parse_area(area, width, height, label, index, path)
+        for y in range(from_y, to_y + 1):
+            for x in range(from_x, to_x + 1):
+                current = grid[y][x]
+                if current != "E" and current != symbol:
+                    raise ValueError(
+                        f"Layout area overlap in {path}: {label}[{index}] collides at x={x}, y={y}."
+                    )
+                grid[y][x] = symbol
+
+
+def _parse_area(
+    area: object,
+    width: int,
+    height: int,
+    label: str,
+    index: int,
+    path: Path,
+) -> tuple[int, int, int, int]:
+    if not isinstance(area, dict):
+        raise ValueError(f"Layout {label}[{index}] must be an object in {path}.")
+
+    from_coord = area.get("from")
+    to_coord = area.get("to")
+    if not _is_valid_coord_pair(from_coord) or not _is_valid_coord_pair(to_coord):
+        raise ValueError(f"Layout {label}[{index}] must define integer 'from' and 'to' pairs in {path}.")
+
+    from_x, from_y = from_coord
+    to_x, to_y = to_coord
+    inside_bounds = (
+        from_x >= 0
+        and from_y >= 0
+        and to_x < width
+        and to_y < height
+        and from_x <= to_x
+        and from_y <= to_y
+    )
+    if not inside_bounds:
+        raise ValueError(f"Layout {label}[{index}] is outside bounds in {path}.")
+
+    return from_x, from_y, to_x, to_y
+
+
+def _is_valid_coord_pair(value: object) -> bool:
+    return (
+        isinstance(value, list)
+        and len(value) == 2
+        and isinstance(value[0], int)
+        and isinstance(value[1], int)
+    )
 
 
 def _parse_choice_items(raw_value: str) -> list[str]:

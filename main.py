@@ -27,7 +27,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--layout",
         help=(
-            "Optional layout path or numeric layout id for a single scenario run. "
+            "Optional layout path (.json/.txt) or numeric layout id for a single scenario run. "
             "If omitted, the scenario's Layout value is used."
         ),
     )
@@ -232,7 +232,7 @@ def resolve_layout_reference(layout_arg: str | None, scenario_layout_id: int) ->
     if not override_path.exists():
         raise FileNotFoundError(f"Layout override not found: {layout_arg}")
 
-    layout_id_match = re.search(r"(\d+)(?=\.txt$)", override_path.name)
+    layout_id_match = re.search(r"(\d+)(?=\.(?:json|txt)$)", override_path.name, re.IGNORECASE)
     layout_id = int(layout_id_match.group(1)) if layout_id_match else scenario_layout_id
     return layout_id, override_path
 
