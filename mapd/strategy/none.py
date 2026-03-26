@@ -8,7 +8,7 @@ class NoneStrategy:
     def select_agent(
         self,
         task: Task,
-        agent_count: int,
+        candidate_agent_ids: list[int],
         availability: dict[int, int],
         travel_times: TravelTimesFn,
     ) -> int:

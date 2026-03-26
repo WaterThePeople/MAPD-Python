@@ -8,11 +8,11 @@ class FCFSStrategy:
     def select_agent(
         self,
         task: Task,
-        agent_count: int,
+        candidate_agent_ids: list[int],
         availability: dict[int, int],
         travel_times: TravelTimesFn,
     ) -> int:
         return min(
-            range(agent_count),
+            candidate_agent_ids,
             key=lambda candidate: (max(availability[candidate], task.release_time), candidate),
         )

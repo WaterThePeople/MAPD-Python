@@ -90,19 +90,34 @@ class WarehouseMap:
         return self._square_candidates(coord)
 
     def _component_pickup_positions(self, start: Coord) -> set[Coord]:
-        component = set()
-        stack = [start]
+        component_depth = {start: 0}
+        queue = [start]
+        positions = set()
+        best_depth = None
 
-        while stack:
-            current = stack.pop()
-            if current in component:
+        while queue:
+            current = queue.pop(0)
+            depth = component_depth[current]
+            direct_positions = {next_coord for next_coord in self._candidate_neighbors(current) if next_coord in self.traversable}
+            if direct_positions:
+                if best_depth is None:
+                    best_depth = depth
+                if depth == best_depth:
+                    positions.update(direct_positions)
                 continue
 
-            component.add(current)
-            for next_coord in self._candidate_neighbors(current):
-                if next_coord in self.shelves and next_coord not in component:
-                    stack.append(next_coord)
+            if best_depth is not None and depth >= best_depth:
+                continue
 
+            for next_coord in self._candidate_neighbors(current):
+                if next_coord in self.shelves and next_coord not in component_depth:
+                    component_depth[next_coord] = depth + 1
+                    queue.append(next_coord)
+
+        if positions:
+            return positions
+
+        component = set(component_depth)
         positions = set()
         for shelf_coord in component:
             for next_coord in self._candidate_neighbors(shelf_coord):

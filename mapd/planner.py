@@ -283,11 +283,36 @@ def assign_available_tasks(
     return_cache = {}
     station_goals = set(warehouse.stations)
     assigned_tasks = []
+    decision_time = 0
 
     for agent_id in range(agent_count):
         availability[agent_id] = 0
 
     ordered_tasks = sorted(tasks, key=lambda task: (task.release_time, task.task_id))
+    pending_tasks: list[Task] = []
+    next_task_index = 0
+
+    def select_pending_task(free_agents: list[int]) -> tuple[Task, int]:
+        if strategy_impl.name != "GreedyCost":
+            task = pending_tasks[0]
+            agent_id = strategy_impl.select_agent(task, free_agents, availability, travel_times)
+            return task, agent_id
+
+        best_task = None
+        best_agent = None
+        best_key = None
+        for task in pending_tasks:
+            for agent_id in free_agents:
+                start_time, arrival_time, finish_time, _ = travel_times(agent_id, task)
+                key = (finish_time, arrival_time, start_time, task.release_time, task.task_id, agent_id)
+                if best_key is None or key < best_key:
+                    best_key = key
+                    best_task = task
+                    best_agent = agent_id
+
+        if best_task is None or best_agent is None:
+            raise RuntimeError("Could not select a task for GreedyCost.")
+        return best_task, best_agent
 
     def travel_times(agent_id: int, task: Task) -> tuple[int, int, int, int]:
         cache_key = (agent_id, task.location_index)
@@ -306,25 +331,46 @@ def assign_available_tasks(
         else:
             return_distance = distance_to_pickup
 
-        start_time = max(availability[agent_id], task.release_time)
+        start_time = max(availability[agent_id], task.release_time, decision_time)
         arrival_time = start_time + distance_to_pickup
         finish_time = start_time + distance_to_pickup + return_distance
         return start_time, arrival_time, finish_time, distance_to_pickup
 
-    for task in ordered_tasks:
-        agent_id = strategy_impl.select_agent(task, agent_count, availability, travel_times)
+    while next_task_index < len(ordered_tasks) or pending_tasks:
+        while next_task_index < len(ordered_tasks) and ordered_tasks[next_task_index].release_time <= decision_time:
+            pending_tasks.append(ordered_tasks[next_task_index])
+            next_task_index += 1
 
-        start_time, _, finish_time, _ = travel_times(agent_id, task)
-        assigned_tasks.append(
-            Task(
-                task_id=task.task_id,
-                agent_id=agent_id,
-                location_index=task.location_index,
-                release_time=task.release_time,
-                deadline=task.deadline,
+        free_agents = [agent_id for agent_id in range(agent_count) if availability[agent_id] <= decision_time]
+
+        if pending_tasks and free_agents:
+            task, agent_id = select_pending_task(free_agents)
+            pending_tasks.remove(task)
+            start_time, _, finish_time, _ = travel_times(agent_id, task)
+            assigned_tasks.append(
+                Task(
+                    task_id=task.task_id,
+                    agent_id=agent_id,
+                    location_index=task.location_index,
+                    release_time=task.release_time,
+                    deadline=task.deadline,
+                )
             )
+            availability[agent_id] = finish_time
+            continue
+
+        future_times = []
+        if next_task_index < len(ordered_tasks):
+            future_times.append(ordered_tasks[next_task_index].release_time)
+        future_times.extend(
+            availability[agent_id]
+            for agent_id in range(agent_count)
+            if availability[agent_id] > decision_time
         )
-        availability[agent_id] = finish_time
+        if not future_times:
+            break
+
+        decision_time = min(future_times)
 
     return assigned_tasks
 

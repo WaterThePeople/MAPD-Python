@@ -12,13 +12,15 @@ class RobinStrategy:
     def select_agent(
         self,
         task: Task,
-        agent_count: int,
+        candidate_agent_ids: list[int],
         availability: dict[int, int],
         travel_times: TravelTimesFn,
     ) -> int:
-        if self._agent_count != agent_count:
-            self._agent_count = agent_count
-            self._next_agent = 0
-        agent_id = self._next_agent
-        self._next_agent = (self._next_agent + 1) % agent_count
-        return agent_id
+        eligible = set(candidate_agent_ids)
+        for offset in range(self._agent_count):
+            candidate = (self._next_agent + offset) % self._agent_count
+            if candidate in eligible:
+                self._next_agent = (candidate + 1) % self._agent_count
+                return candidate
+
+        raise RuntimeError("RobinStrategy could not find an eligible agent.")
