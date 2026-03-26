@@ -11,6 +11,8 @@ from mapd.warehouse import WarehouseMap
 HEX_ASPECT_RATIO = 0.8660254
 HEX_VERTICAL_STEP_RATIO = 0.75
 HEX_GAP = 3
+TRIANGLE_HEIGHT_RATIO = 0.8660254
+TRIANGLE_GAP = 1
 
 
 def draw_cross(
@@ -171,9 +173,63 @@ def hex_polygon(coord: Coord, cell_size: int, header_height: int) -> list[tuple[
     ]
 
 
+def triangle_metrics(cell_size: int) -> dict[str, float]:
+    triangle_side = float(cell_size)
+    triangle_height = triangle_side * TRIANGLE_HEIGHT_RATIO
+    step_x = triangle_side / 2
+    step_y = triangle_height
+    return {
+        "triangle_side": triangle_side,
+        "triangle_height": triangle_height,
+        "step_x": step_x,
+        "step_y": step_y,
+        "padding": float(TRIANGLE_GAP),
+    }
+
+
+def triangle_bounds(coord: Coord, cell_size: int, header_height: int) -> tuple[float, float, float, float]:
+    row, col = coord
+    metrics = triangle_metrics(cell_size)
+    left = metrics["padding"] + col * metrics["step_x"]
+    top = header_height + metrics["padding"] + row * metrics["step_y"]
+    return left, top, left + metrics["triangle_side"], top + metrics["triangle_height"]
+
+
+def triangle_points_up(coord: Coord) -> bool:
+    row, col = coord
+    return (row + col) % 2 == 0
+
+
+def triangle_polygon(coord: Coord, cell_size: int, header_height: int) -> list[tuple[float, float]]:
+    left, top, right, bottom = triangle_bounds(coord, cell_size, header_height)
+    width = right - left
+    if triangle_points_up(coord):
+        return [
+            (left + width * 0.5, top),
+            (left, bottom),
+            (right, bottom),
+        ]
+    return [
+        (left, top),
+        (right, top),
+        (left + width * 0.5, bottom),
+    ]
+
+
+def triangle_overlay_bounds(coord: Coord, cell_size: int, header_height: int) -> tuple[float, float, float, float]:
+    left, top, right, bottom = triangle_bounds(coord, cell_size, header_height)
+    height = bottom - top
+    center_x = (left + right) / 2
+    center_y = top + (height * 2 / 3 if triangle_points_up(coord) else height / 3)
+    radius = height * 0.28
+    return center_x - radius, center_y - radius, center_x + radius, center_y + radius
+
+
 def cell_bounds(warehouse: WarehouseMap, coord: Coord, cell_size: int, header_height: int) -> tuple[float, float, float, float]:
     if warehouse.layout_type == "hexagon":
         return hex_bounds(coord, cell_size, header_height)
+    if warehouse.layout_type == "triangle":
+        return triangle_overlay_bounds(coord, cell_size, header_height)
     return square_bounds(coord, cell_size, header_height)
 
 
@@ -191,6 +247,12 @@ def render_dimensions(warehouse: WarehouseMap, cell_size: int) -> tuple[int, int
             + (warehouse.height - 1) * metrics["step_y"]
             + metrics["hex_height"]
         )
+        header_height = max(36, cell_size)
+        return int(math.ceil(board_width)), int(math.ceil(board_height)), header_height
+    if warehouse.layout_type == "triangle":
+        metrics = triangle_metrics(cell_size)
+        board_width = metrics["padding"] * 2 + metrics["triangle_side"] + (warehouse.width - 1) * metrics["step_x"]
+        board_height = metrics["padding"] * 2 + warehouse.height * metrics["triangle_height"]
         header_height = max(36, cell_size)
         return int(math.ceil(board_width)), int(math.ceil(board_height)), header_height
 
@@ -249,6 +311,29 @@ def draw_hex_cell(
         draw_polygon_outline(draw, polygon, grid_color, width=1)
 
 
+def draw_triangle_cell(
+    draw: ImageDraw.ImageDraw,
+    cell: str,
+    coord: Coord,
+    cell_size: int,
+    header_height: int,
+    grid_color: tuple[int, int, int],
+    station_outline: tuple[int, int, int],
+) -> None:
+    polygon = triangle_polygon(coord, cell_size, header_height)
+
+    if cell == "#":
+        draw.polygon(polygon, fill=(0, 0, 0))
+        draw_polygon_outline(draw, polygon, (35, 35, 35), width=1)
+    elif cell == "S":
+        draw.polygon(polygon, fill=(255, 255, 255))
+        draw_polygon_outline(draw, polygon, grid_color, width=1)
+        draw_polygon_outline(draw, scale_polygon(polygon, 0.8), station_outline, width=3)
+    else:
+        draw.polygon(polygon, fill=(255, 255, 255))
+        draw_polygon_outline(draw, polygon, grid_color, width=1)
+
+
 def draw_cell(
     draw: ImageDraw.ImageDraw,
     warehouse: WarehouseMap,
@@ -261,6 +346,9 @@ def draw_cell(
     cell = warehouse.rows[coord[0]][coord[1]]
     if warehouse.layout_type == "hexagon":
         draw_hex_cell(draw, cell, coord, cell_size, header_height, grid_color, station_outline)
+        return
+    if warehouse.layout_type == "triangle":
+        draw_triangle_cell(draw, cell, coord, cell_size, header_height, grid_color, station_outline)
         return
     draw_square_cell(draw, cell, coord, cell_size, header_height, grid_color, station_outline)
 

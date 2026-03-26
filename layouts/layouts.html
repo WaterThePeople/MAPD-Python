@@ -18,6 +18,7 @@
     --gap: 3px;
     --square-size: 24px;
     --hex-width: 28px;
+    --triangle-side: 28px;
   }
 
   * {
@@ -102,6 +103,10 @@
     position: relative;
   }
 
+  .board.triangle {
+    position: relative;
+  }
+
   .cell {
     background: var(--empty);
   }
@@ -126,6 +131,25 @@
   }
 
   .cell.hexagon:hover {
+    filter: brightness(1.04) drop-shadow(0 0 4px rgba(47, 38, 28, 0.22));
+  }
+
+  .cell.triangle {
+    position: absolute;
+    width: var(--triangle-side);
+    height: calc(var(--triangle-side) * 0.8660254);
+    border: 1px solid rgba(119, 106, 88, 0.35);
+  }
+
+  .cell.triangle.up {
+    clip-path: polygon(50% 0%, 0% 100%, 100% 100%);
+  }
+
+  .cell.triangle.down {
+    clip-path: polygon(0% 0%, 100% 0%, 50% 100%);
+  }
+
+  .cell.triangle:hover {
     filter: brightness(1.04) drop-shadow(0 0 4px rgba(47, 38, 28, 0.22));
   }
 
@@ -161,6 +185,7 @@
     :root {
       --square-size: 20px;
       --hex-width: 24px;
+      --triangle-side: 24px;
     }
   }
 </style>
@@ -180,17 +205,14 @@
 
   <p class="meta" id="meta"></p>
   <div class="board" id="board" aria-label="Podglad layoutu magazynu"></div>
-  <p class="hint" id="hint">
-    Podglad laduje dane z plikow JSON w katalogu <code>layouts</code>. Jesli przegladarka blokuje odczyt
-    plikow przy otwarciu przez <code>file://</code>, uruchom ten plik przez prosty lokalny serwer HTTP.
-  </p>
 </div>
 
 <script>
 const AVAILABLE_LAYOUTS = ["0", "1"];
 const AVAILABLE_TYPES = [
   { value: "square", label: "Kwadratowe" },
-  { value: "hexagon", label: "Szesciokatne" }
+  { value: "hexagon", label: "Szesciokatne" },
+  { value: "triangle", label: "Trojkatne" }
 ];
 const SUPPORTED_TYPES = new Set(AVAILABLE_TYPES.map((item) => item.value));
 const layoutCache = new Map();
@@ -329,7 +351,7 @@ function validateLayout(layout) {
   }
 
   if (typeof layout.type !== "string" || !SUPPORTED_TYPES.has(layout.type)) {
-    throw new Error("Layout must define supported type: square or hexagon.");
+    throw new Error("Layout must define supported type: square, hexagon or triangle.");
   }
 
   if (layout.width <= 0 || layout.height <= 0) {
@@ -357,9 +379,7 @@ function renderMeta(layoutId, layout) {
     "Layout: " + layoutId +
     " | Szerokosc: " + layout.width +
     " | Wysokosc: " + layout.height +
-    " | Typ: " + layout.type +
-    " | Stacje: " + layout.stations.length +
-    " | Polki: " + layout.shelves.length;
+    " | Typ: " + layout.type
 }
 
 function createCell(layout, x, y, shape) {
@@ -430,9 +450,51 @@ function renderHexagonBoard(layout) {
   }
 }
 
+function getTriangleMetrics() {
+  const rootStyles = getComputedStyle(document.documentElement);
+  const triangleSide = parseFloat(rootStyles.getPropertyValue("--triangle-side")) || 28;
+  const triangleHeight = triangleSide * 0.8660254;
+  const stepX = triangleSide / 2;
+  const stepY = triangleHeight;
+  const padding = 1;
+  return {
+    triangleSide,
+    triangleHeight,
+    stepX,
+    stepY,
+    padding
+  };
+}
+
+function renderTriangleBoard(layout) {
+  boardElement.innerHTML = "";
+  boardElement.className = "board triangle";
+
+  const metrics = getTriangleMetrics();
+  const totalWidth = metrics.padding * 2 + metrics.triangleSide + (layout.width - 1) * metrics.stepX;
+  const totalHeight = metrics.padding * 2 + layout.height * metrics.triangleHeight;
+  boardElement.style.width = totalWidth + "px";
+  boardElement.style.height = totalHeight + "px";
+
+  for (let y = 0; y < layout.height; y += 1) {
+    for (let x = 0; x < layout.width; x += 1) {
+      const orientation = (x + y) % 2 === 0 ? "up" : "down";
+      const cell = createCell(layout, x, y, "triangle " + orientation);
+      cell.style.left = (metrics.padding + x * metrics.stepX) + "px";
+      cell.style.top = (metrics.padding + y * metrics.stepY) + "px";
+      boardElement.appendChild(cell);
+    }
+  }
+}
+
 function renderBoard(layout) {
   if (layout.type === "hexagon") {
     renderHexagonBoard(layout);
+    return;
+  }
+
+  if (layout.type === "triangle") {
+    renderTriangleBoard(layout);
     return;
   }
 

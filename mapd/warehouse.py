@@ -2,7 +2,7 @@ from mapd.models import Coord
 
 
 class WarehouseMap:
-    SUPPORTED_LAYOUT_TYPES = {"square", "hexagon"}
+    SUPPORTED_LAYOUT_TYPES = {"square", "hexagon", "triangle"}
 
     def __init__(self, rows: list[str], *, layout_type: str = "square") -> None:
         if not rows:
@@ -58,26 +58,13 @@ class WarehouseMap:
         return row * self.width + col
 
     def neighbors(self, coord: Coord) -> list[Coord]:
-        if self.layout_type == "hexagon":
-            return self._hex_neighbors(coord)
-
-        row, col = coord
-        result = []
-        candidates = [
-            (row - 1, col),
-            (row + 1, col),
-            (row, col - 1),
-            (row, col + 1),
-        ]
-
-        for next_coord in candidates:
-            if next_coord in self.traversable:
-                result.append(next_coord)
-        return result
+        return [next_coord for next_coord in self._candidate_neighbors(coord) if next_coord in self.traversable]
 
     def distance(self, src: Coord, dst: Coord) -> int:
         if self.layout_type == "hexagon":
             return self._hex_distance(src, dst)
+        if self.layout_type == "triangle":
+            return self._triangle_distance(src, dst)
         return abs(src[0] - dst[0]) + abs(src[1] - dst[1])
 
     def pickup_positions(self, location_index: int) -> set[Coord]:
@@ -86,19 +73,56 @@ class WarehouseMap:
             return {location}
 
         if location in self.shelves:
-            positions = set()
-            for coord in self.neighbors(location):
-                positions.add(coord)
+            positions = set(self.neighbors(location))
+            if not positions:
+                positions = self._component_pickup_positions(location)
             if not positions:
                 raise ValueError(f"Shelf {location_index} has no accessible pickup position.")
             return positions
 
         raise ValueError(f"Task location {location_index} is not a valid map position.")
 
-    def _hex_neighbors(self, coord: Coord) -> list[Coord]:
+    def _candidate_neighbors(self, coord: Coord) -> list[Coord]:
+        if self.layout_type == "hexagon":
+            return self._hex_candidates(coord)
+        if self.layout_type == "triangle":
+            return self._triangle_candidates(coord)
+        return self._square_candidates(coord)
+
+    def _component_pickup_positions(self, start: Coord) -> set[Coord]:
+        component = set()
+        stack = [start]
+
+        while stack:
+            current = stack.pop()
+            if current in component:
+                continue
+
+            component.add(current)
+            for next_coord in self._candidate_neighbors(current):
+                if next_coord in self.shelves and next_coord not in component:
+                    stack.append(next_coord)
+
+        positions = set()
+        for shelf_coord in component:
+            for next_coord in self._candidate_neighbors(shelf_coord):
+                if next_coord in self.traversable:
+                    positions.add(next_coord)
+        return positions
+
+    def _square_candidates(self, coord: Coord) -> list[Coord]:
+        row, col = coord
+        return [
+            (row - 1, col),
+            (row + 1, col),
+            (row, col - 1),
+            (row, col + 1),
+        ]
+
+    def _hex_candidates(self, coord: Coord) -> list[Coord]:
         row, col = coord
         if row % 2 == 0:
-            candidates = [
+            return [
                 (row, col - 1),
                 (row, col + 1),
                 (row - 1, col - 1),
@@ -106,17 +130,14 @@ class WarehouseMap:
                 (row + 1, col - 1),
                 (row + 1, col),
             ]
-        else:
-            candidates = [
-                (row, col - 1),
-                (row, col + 1),
-                (row - 1, col),
-                (row - 1, col + 1),
-                (row + 1, col),
-                (row + 1, col + 1),
-            ]
-
-        return [next_coord for next_coord in candidates if next_coord in self.traversable]
+        return [
+            (row, col - 1),
+            (row, col + 1),
+            (row - 1, col),
+            (row - 1, col + 1),
+            (row + 1, col),
+            (row + 1, col + 1),
+        ]
 
     def _hex_distance(self, src: Coord, dst: Coord) -> int:
         src_x, src_y, src_z = self._hex_cube(src)
@@ -129,3 +150,27 @@ class WarehouseMap:
         z = row
         y = -x - z
         return x, y, z
+
+    def _triangle_candidates(self, coord: Coord) -> list[Coord]:
+        row, col = coord
+        if self._triangle_points_up(coord):
+            return [
+                (row, col - 1),
+                (row, col + 1),
+                (row + 1, col),
+            ]
+        return [
+            (row, col - 1),
+            (row, col + 1),
+            (row - 1, col),
+        ]
+
+    def _triangle_distance(self, src: Coord, dst: Coord) -> int:
+        # Every move changes either the row or the column by exactly one,
+        # so Manhattan distance stays an admissible lower bound on the
+        # orientation-constrained triangular grid.
+        return abs(src[0] - dst[0]) + abs(src[1] - dst[1])
+
+    def _triangle_points_up(self, coord: Coord) -> bool:
+        row, col = coord
+        return (row + col) % 2 == 0

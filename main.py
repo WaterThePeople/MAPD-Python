@@ -42,7 +42,7 @@ DEFAULT_RENDER_GIF = False
 DEFAULT_DEBUGGING = False
 DEFAULT_DEBUG_FRAMES_ROOT = Path("debugging")
 
-LAYOUT_TYPE_CHOICES = ["square", "hexagon"]
+LAYOUT_TYPE_CHOICES = ["square", "hexagon", "triangle"]
 MODE_CHOICES = ["Set", "Available"]
 STRATEGY_CHOICES = ["FCFS", "Robin", "GreedyCost", "None"]
 ALGORITHM_CHOICES = ["A*", "SIPP", "BFS"]
@@ -328,6 +328,21 @@ def resolve_layout_override_path(layout_arg: str) -> Path:
     raise FileNotFoundError(f"Layout override not found: {layout_arg}")
 
 
+def infer_layout_id(layout_arg: str | None) -> int | None:
+    if layout_arg is None:
+        return None
+
+    stripped_layout_arg = layout_arg.strip()
+    if stripped_layout_arg.isdigit():
+        return int(stripped_layout_arg)
+
+    layout_id_match = re.search(r"(\d+)(?=\.(?:json|txt)$)", Path(stripped_layout_arg).name, re.IGNORECASE)
+    if layout_id_match is not None:
+        return int(layout_id_match.group(1))
+
+    return None
+
+
 def resolve_layout_reference(
     layout_arg: str | None,
     scenario_layout_id: int,
@@ -351,8 +366,7 @@ def resolve_layout_reference(
         )
 
     override_path = resolve_layout_override_path(stripped_layout_arg)
-    layout_id_match = re.search(r"(\d+)(?=\.(?:json|txt)$)", override_path.name, re.IGNORECASE)
-    layout_id = int(layout_id_match.group(1)) if layout_id_match else scenario_layout_id
+    layout_id = infer_layout_id(override_path.name) or scenario_layout_id
     return layout_id, override_path, normalized_layout_type
 
 
@@ -419,6 +433,17 @@ def default_layout_argument(explicit_flags: set[str]) -> str | None:
     if "--scenario" in explicit_flags:
         return None
     return DEFAULT_LAYOUT
+
+
+def default_scenario_argument(explicit_flags: set[str], layout_arg: str | None) -> str:
+    if "--scenario" in explicit_flags:
+        return DEFAULT_SCENARIO
+
+    inferred_layout_id = infer_layout_id(layout_arg)
+    if inferred_layout_id is None:
+        return DEFAULT_SCENARIO
+
+    return f"{DEFAULT_SCENARIO_SUITE}_map{inferred_layout_id}.txt"
 
 
 def build_debug_frames_dir(scenario_path: Path) -> Path:
@@ -547,8 +572,8 @@ def run_suite(args: argparse.Namespace) -> None:
 
 def run_single_scenario(args: argparse.Namespace) -> None:
     explicit_flags = args.explicit_flags
-    scenario_arg = args.scenario or DEFAULT_SCENARIO
     layout_arg = args.layout if "--layout" in explicit_flags else default_layout_argument(explicit_flags)
+    scenario_arg = args.scenario or default_scenario_argument(explicit_flags, layout_arg)
     layout_type = args.layout_type or DEFAULT_LAYOUT_TYPE
     mode = args.mode or DEFAULT_MODE
     station_mode = args.station or DEFAULT_STATION
