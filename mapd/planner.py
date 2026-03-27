@@ -315,19 +315,19 @@ def assign_available_tasks(
         return best_task, best_agent
 
     def travel_times(agent_id: int, task: Task) -> tuple[int, int, int, int]:
-        cache_key = (agent_id, task.location_index)
+        cache_key = (agent_id, task.shelf_index)
         if cache_key not in distance_cache:
-            pickup_goals = warehouse.pickup_positions(task.location_index)
+            pickup_goals = warehouse.pickup_positions(task.shelf_index)
             distance_cache[cache_key] = shortest_distance(warehouse, homes[agent_id], pickup_goals, set(), algorithm)
 
         distance_to_pickup = distance_cache[cache_key]
         if station_mode == "Available":
-            if task.location_index not in return_cache:
-                pickup_goals = warehouse.pickup_positions(task.location_index)
-                return_cache[task.location_index] = min(
+            if task.shelf_index not in return_cache:
+                pickup_goals = warehouse.pickup_positions(task.shelf_index)
+                return_cache[task.shelf_index] = min(
                     shortest_distance(warehouse, pickup, station_goals, set(), algorithm) for pickup in pickup_goals
                 )
-            return_distance = return_cache[task.location_index]
+            return_distance = return_cache[task.shelf_index]
         else:
             return_distance = distance_to_pickup
 
@@ -351,7 +351,7 @@ def assign_available_tasks(
                 Task(
                     task_id=task.task_id,
                     agent_id=agent_id,
-                    location_index=task.location_index,
+                    shelf_index=task.shelf_index,
                     release_time=task.release_time,
                     deadline=task.deadline,
                 )
@@ -410,9 +410,9 @@ def estimate_finish_times(
             if current_time < task.release_time:
                 current_time = task.release_time
 
-            cache_key = (agent_id, task.location_index)
+            cache_key = (agent_id, task.shelf_index)
             if cache_key not in distance_cache:
-                pickup_goals = warehouse.pickup_positions(task.location_index)
+                pickup_goals = warehouse.pickup_positions(task.shelf_index)
                 distance_cache[cache_key] = shortest_distance(warehouse, home, pickup_goals, set(), algorithm)
 
             current_time += distance_cache[cache_key] * 2
@@ -513,7 +513,7 @@ def build_agent_plan(
             current = path[-1]
             current_time = len(path) - 1
 
-        pickup_goals = warehouse.pickup_positions(task.location_index)
+        pickup_goals = warehouse.pickup_positions(task.shelf_index)
         to_pickup = find_path(
             warehouse,
             reservations,

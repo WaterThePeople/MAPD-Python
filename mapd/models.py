@@ -8,7 +8,7 @@ Coord = tuple[int, int]
 class Task:
     task_id: int
     agent_id: int
-    location_index: int
+    shelf_index: int
     release_time: int
     deadline: int | None
 
@@ -30,7 +30,7 @@ class AgentPlan:
 class ScenarioDefinition:
     agent_count: int
     tasks: list[Task]
-    layout_id: int
+    layout_ids: list[int]
     layout_types: list[str]
     modes: list[str]
     station_modes: list[str]
@@ -40,6 +40,7 @@ class ScenarioDefinition:
 
 @dataclass(frozen=True)
 class ScenarioVariant:
+    layout_id: int
     layout_type: str
     mode: str
     station_mode: str

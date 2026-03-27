@@ -97,10 +97,10 @@ def _load_layout_from_json(path: Path, layout_type: str) -> WarehouseMap:
         raise ValueError(f"Layout JSON must define 'stations' and 'shelves' arrays: {path}")
 
     grid = [["E" for _ in range(width)] for _ in range(height)]
-    _fill_areas(grid, shelves, width, height, "#", "shelves", path)
+    shelf_slots = _fill_areas(grid, shelves, width, height, "#", "shelves", path)
     _fill_areas(grid, stations, width, height, "S", "stations", path)
     rows = ["".join(row) for row in grid]
-    return WarehouseMap(rows, layout_type=normalize_layout_type(layout_type))
+    return WarehouseMap(rows, layout_type=normalize_layout_type(layout_type), shelf_slots=shelf_slots)
 
 
 def _fill_areas(
@@ -111,7 +111,8 @@ def _fill_areas(
     symbol: str,
     label: str,
     path: Path,
-) -> None:
+) -> list[tuple[int, int]]:
+    coords: list[tuple[int, int]] = []
     for index, area in enumerate(areas):
         from_x, from_y, to_x, to_y = _parse_area(area, width, height, label, index, path)
         for y in range(from_y, to_y + 1):
@@ -122,6 +123,8 @@ def _fill_areas(
                         f"Layout area overlap in {path}: {label}[{index}] collides at x={x}, y={y}."
                     )
                 grid[y][x] = symbol
+                coords.append((y, x))
+    return coords
 
 
 def _parse_area(
@@ -216,6 +219,19 @@ def _parse_choices(raw_value: str, normalizer) -> list[str]:
     return values
 
 
+def _parse_layout_ids(raw_value: str) -> list[int]:
+    layout_ids: list[int] = []
+    for item in _parse_choice_items(raw_value):
+        if not item.isdigit():
+            raise ValueError(f"Unsupported layout id: {item}")
+        layout_id = int(item)
+        if layout_id not in layout_ids:
+            layout_ids.append(layout_id)
+    if not layout_ids:
+        raise ValueError("Scenario must define at least one layout id.")
+    return layout_ids
+
+
 def load_scenario_definition(path: Path) -> ScenarioDefinition:
     text = path.read_text(encoding="utf-8")
     agents_match = re.search(r"Agents:\s*(\d+)", text)
@@ -225,7 +241,7 @@ def load_scenario_definition(path: Path) -> ScenarioDefinition:
     strategy_match = re.search(r"Strategy:\s*([^\r\n]+)", text)
     algorithm_match = re.search(r"Algorithm:\s*([^\r\n]+)", text)
     type_match = re.search(r"Type:\s*([^\r\n]+)", text)
-    layout_match = re.search(r"Layout:\s*(\d+)", text)
+    layout_match = re.search(r"Layout:\s*([^\r\n]+)", text)
     if not agents_match or not tasks_match or not mode_match or not station_match or not strategy_match:
         raise ValueError(
             "Scenario file must contain 'Agents: N', 'Tasks: N', 'Mode: ...', "
@@ -247,10 +263,11 @@ def load_scenario_definition(path: Path) -> ScenarioDefinition:
         layout_types = ["square"]
 
     if layout_match is not None:
-        layout_id = int(layout_match.group(1))
+        layout_ids = _parse_layout_ids(layout_match.group(1))
     else:
-        filename_match = re.search(r"_map(\d+)(?=\.txt$)", path.name)
-        layout_id = int(filename_match.group(1)) if filename_match is not None else 0
+        filename_match = re.search(r"(\d+)(?=\.txt$)", path.name)
+        fallback_layout_id = int(filename_match.group(1)) if filename_match is not None else 0
+        layout_ids = [fallback_layout_id]
 
     tasks: list[Task] = []
     for line in text.splitlines():
@@ -271,7 +288,7 @@ def load_scenario_definition(path: Path) -> ScenarioDefinition:
             Task(
                 task_id=numbers[0],
                 agent_id=numbers[1],
-                location_index=numbers[2],
+                shelf_index=numbers[2],
                 release_time=release_time,
                 deadline=deadline,
             )
@@ -283,7 +300,7 @@ def load_scenario_definition(path: Path) -> ScenarioDefinition:
     return ScenarioDefinition(
         agent_count=agent_count,
         tasks=tasks,
-        layout_id=layout_id,
+        layout_ids=layout_ids,
         layout_types=layout_types,
         modes=modes,
         station_modes=station_modes,
@@ -294,33 +311,40 @@ def load_scenario_definition(path: Path) -> ScenarioDefinition:
 
 def expand_scenario_variants(definition: ScenarioDefinition) -> list[ScenarioVariant]:
     variants: list[ScenarioVariant] = []
-    for layout_type in definition.layout_types:
-        for mode in definition.modes:
-            strategies = ["None"] if mode == "Set" else definition.strategies
-            for station_mode in definition.station_modes:
-                for algorithm in definition.algorithms:
-                    for strategy in strategies:
-                        variant = ScenarioVariant(
-                            layout_type=layout_type,
-                            mode=mode,
-                            station_mode=station_mode,
-                            strategy=strategy,
-                            algorithm=algorithm,
-                        )
-                        if variant not in variants:
-                            variants.append(variant)
+    for layout_id in definition.layout_ids:
+        for layout_type in definition.layout_types:
+            for mode in definition.modes:
+                strategies = ["None"] if mode == "Set" else definition.strategies
+                for station_mode in definition.station_modes:
+                    for algorithm in definition.algorithms:
+                        for strategy in strategies:
+                            variant = ScenarioVariant(
+                                layout_id=layout_id,
+                                layout_type=layout_type,
+                                mode=mode,
+                                station_mode=station_mode,
+                                strategy=strategy,
+                                algorithm=algorithm,
+                            )
+                            if variant not in variants:
+                                variants.append(variant)
     return variants
 
 
 def resolve_scenario_variant(
     definition: ScenarioDefinition,
     *,
+    layout_id: int | None = None,
     layout_type: str | None = None,
     mode: str | None = None,
     station_mode: str | None = None,
     strategy: str | None = None,
     algorithm: str | None = None,
 ) -> ScenarioVariant:
+    resolved_layout_id = definition.layout_ids[0] if layout_id is None else layout_id
+    if resolved_layout_id not in definition.layout_ids:
+        raise ValueError(f"Layout '{resolved_layout_id}' is not allowed by this scenario.")
+
     resolved_layout_type = normalize_layout_type(layout_type) if layout_type is not None else definition.layout_types[0]
     if resolved_layout_type not in definition.layout_types:
         raise ValueError(f"Layout type '{resolved_layout_type}' is not allowed by this scenario.")
@@ -341,6 +365,7 @@ def resolve_scenario_variant(
 
     if resolved_mode == "Set":
         return ScenarioVariant(
+            layout_id=resolved_layout_id,
             layout_type=resolved_layout_type,
             mode=resolved_mode,
             station_mode=resolved_station,
@@ -353,6 +378,7 @@ def resolve_scenario_variant(
         raise ValueError(f"Strategy '{resolved_strategy}' is not allowed by this scenario.")
 
     return ScenarioVariant(
+        layout_id=resolved_layout_id,
         layout_type=resolved_layout_type,
         mode=resolved_mode,
         station_mode=resolved_station,

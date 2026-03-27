@@ -4,7 +4,13 @@ from mapd.models import Coord
 class WarehouseMap:
     SUPPORTED_LAYOUT_TYPES = {"square", "hexagon", "triangle"}
 
-    def __init__(self, rows: list[str], *, layout_type: str = "square") -> None:
+    def __init__(
+        self,
+        rows: list[str],
+        *,
+        layout_type: str = "square",
+        shelf_slots: list[Coord] | None = None,
+    ) -> None:
         if not rows:
             raise ValueError("Layout is empty.")
 
@@ -44,9 +50,26 @@ class WarehouseMap:
                 if cell == "#":
                     self.shelves.add(coord)
 
+        if shelf_slots is None:
+            self.shelf_slots = sorted(self.shelves, key=self.coord_to_index)
+        else:
+            self.shelf_slots = shelf_slots[:]
+
+        if len(self.shelf_slots) != len(self.shelves):
+            raise ValueError("Shelf slot definitions do not match the shelf cells present in the layout.")
+
+        if set(self.shelf_slots) != self.shelves:
+            raise ValueError("Shelf slot ordering must reference every shelf cell exactly once.")
+
+        self._shelf_index_by_coord = {coord: index for index, coord in enumerate(self.shelf_slots)}
+
     @property
     def cell_count(self) -> int:
         return self.width * self.height
+
+    @property
+    def shelf_count(self) -> int:
+        return len(self.shelf_slots)
 
     def index_to_coord(self, index: int) -> Coord:
         if index < 0 or index >= self.cell_count:
@@ -56,6 +79,16 @@ class WarehouseMap:
     def coord_to_index(self, coord: Coord) -> int:
         row, col = coord
         return row * self.width + col
+
+    def shelf_index_to_coord(self, shelf_index: int) -> Coord:
+        if shelf_index < 0 or shelf_index >= self.shelf_count:
+            raise ValueError(f"Shelf index {shelf_index} is outside the layout.")
+        return self.shelf_slots[shelf_index]
+
+    def coord_to_shelf_index(self, coord: Coord) -> int:
+        if coord not in self._shelf_index_by_coord:
+            raise ValueError(f"Coordinate {coord} is not a shelf cell.")
+        return self._shelf_index_by_coord[coord]
 
     def neighbors(self, coord: Coord) -> list[Coord]:
         return [next_coord for next_coord in self._candidate_neighbors(coord) if next_coord in self.traversable]
@@ -67,20 +100,14 @@ class WarehouseMap:
             return self._triangle_distance(src, dst)
         return abs(src[0] - dst[0]) + abs(src[1] - dst[1])
 
-    def pickup_positions(self, location_index: int) -> set[Coord]:
-        location = self.index_to_coord(location_index)
-        if location in self.traversable:
-            return {location}
-
-        if location in self.shelves:
-            positions = set(self.neighbors(location))
-            if not positions:
-                positions = self._component_pickup_positions(location)
-            if not positions:
-                raise ValueError(f"Shelf {location_index} has no accessible pickup position.")
-            return positions
-
-        raise ValueError(f"Task location {location_index} is not a valid map position.")
+    def pickup_positions(self, shelf_index: int) -> set[Coord]:
+        shelf_coord = self.shelf_index_to_coord(shelf_index)
+        positions = set(self.neighbors(shelf_coord))
+        if not positions:
+            positions = self._component_pickup_positions(shelf_coord)
+        if not positions:
+            raise ValueError(f"Shelf {shelf_index} has no accessible pickup position.")
+        return positions
 
     def _candidate_neighbors(self, coord: Coord) -> list[Coord]:
         if self.layout_type == "hexagon":

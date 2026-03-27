@@ -27,7 +27,7 @@ from mapd.results_workbook import (
 # Default settings
 DEFAULT_LAYOUT = "0.json"
 DEFAULT_LAYOUT_TYPE = "square"
-DEFAULT_SCENARIO = "0_map0.txt"
+DEFAULT_SCENARIO = "0.txt"
 DEFAULT_SCENARIO_SUITE = "0"
 DEFAULT_OUTPUT = "simulation.gif"
 DEFAULT_SUITE_OUTPUT_DIR = "gifs"
@@ -66,7 +66,7 @@ def build_parser() -> argparse.ArgumentParser:
         nargs="?",
         const=DEFAULT_SCENARIO_SUITE,
         help=(
-            "Run every variant from a scenario suite directory, for example '--suite 2'. "
+            "Run every variant from a scenario definition, for example '--suite 2'. "
             f"If the value is omitted, '{DEFAULT_SCENARIO_SUITE}' is used."
         ),
     )
@@ -98,7 +98,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--cell-size",
         type=int,
         default=DEFAULT_CELL_SIZE,
-        help=f"Rendered size of a single cell in pixels. Default: {DEFAULT_CELL_SIZE}",
+        help=(
+            "Preferred size of a single cell in pixels. Large layouts are automatically scaled down "
+            f"to fit the frame. Default: {DEFAULT_CELL_SIZE}"
+        ),
     )
     parser.add_argument(
         "--frame-duration",
@@ -196,7 +199,7 @@ def summary_lines(
             if task.deadline is not None and completion is not None and completion > task.deadline:
                 late = f",late={completion - task.deadline}"
             task_parts.append(
-                f"{task.task_id}@{task.location_index}[t={task.release_time},d={deadline}{late}]"
+                f"{task.task_id}@s{task.shelf_index}[t={task.release_time},d={deadline}{late}]"
             )
 
         task_description = ", ".join(task_parts) or "no tasks"
@@ -258,26 +261,8 @@ def resolve_scenario_path(scenario_arg: str) -> Path:
 
 
 def derive_suite_paths(suite_arg: str) -> tuple[str, list[Path]]:
-    suite_path = Path(suite_arg)
-    if suite_path.is_dir():
-        scenarios_dir = suite_path
-    else:
-        candidate_dir = Path("scenarios") / suite_arg
-        if candidate_dir.is_dir():
-            scenarios_dir = candidate_dir
-        elif suite_path.is_file():
-            scenarios_dir = suite_path.parent
-        else:
-            raise FileNotFoundError(f"Suite directory not found: {suite_arg}")
-
-    suite_name = scenarios_dir.name
-    all_paths = sorted(scenarios_dir.glob("*.txt"))
-    mapped_paths = [
-        path
-        for path in all_paths
-        if re.fullmatch(rf"{re.escape(suite_name)}_map\d+\.txt", path.name, re.IGNORECASE)
-    ]
-    return suite_name, mapped_paths or all_paths
+    scenario_path = resolve_scenario_path(suite_arg)
+    return scenario_path.stem, [scenario_path]
 
 
 def variant_filename_token(value: str) -> str:
@@ -297,6 +282,7 @@ def variant_filename_token(value: str) -> str:
 
 def variant_label(
     scenario_label: str,
+    layout_id: int,
     layout_type: str,
     mode: str,
     station_mode: str,
@@ -304,7 +290,8 @@ def variant_label(
     algorithm: str,
 ) -> str:
     return (
-        f"{layout_type}_{scenario_label}_{variant_filename_token(mode)}_{variant_filename_token(station_mode)}_"
+        f"{layout_type}_layout{layout_id}_{scenario_label}_"
+        f"{variant_filename_token(mode)}_{variant_filename_token(station_mode)}_"
         f"{variant_filename_token(strategy)}_{variant_filename_token(algorithm)}"
     )
 
@@ -439,11 +426,7 @@ def default_scenario_argument(explicit_flags: set[str], layout_arg: str | None) 
     if "--scenario" in explicit_flags:
         return DEFAULT_SCENARIO
 
-    inferred_layout_id = infer_layout_id(layout_arg)
-    if inferred_layout_id is None:
-        return DEFAULT_SCENARIO
-
-    return f"{DEFAULT_SCENARIO_SUITE}_map{inferred_layout_id}.txt"
+    return DEFAULT_SCENARIO
 
 
 def build_debug_frames_dir(scenario_path: Path) -> Path:
@@ -473,11 +456,11 @@ def run_suite(args: argparse.Namespace) -> None:
         print(f"[2/4] Loading scenario from {scenario_path}")
         definition = load_scenario_definition(scenario_path)
         for variant in expand_scenario_variants(definition):
-            cache_key = (definition.layout_id, variant.layout_type)
+            cache_key = (variant.layout_id, variant.layout_type)
             if cache_key not in warehouse_cache:
                 resolved_layout_id, resolved_layout_path, resolved_layout_type = resolve_layout_reference(
                     None,
-                    definition.layout_id,
+                    variant.layout_id,
                     variant.layout_type,
                 )
                 warehouse = load_layout(resolved_layout_path, resolved_layout_type)
@@ -495,6 +478,7 @@ def run_suite(args: argparse.Namespace) -> None:
             resolved_layout_id, _, _, warehouse = warehouse_cache[cache_key]
             current_label = variant_label(
                 scenario_path.stem,
+                resolved_layout_id,
                 variant.layout_type,
                 variant.mode,
                 variant.station_mode,
@@ -587,6 +571,7 @@ def run_single_scenario(args: argparse.Namespace) -> None:
     definition = load_scenario_definition(scenario_path)
     variant = resolve_scenario_variant(
         definition,
+        layout_id=infer_layout_id(layout_arg),
         layout_type=layout_type,
         mode=mode,
         station_mode=station_mode,
@@ -601,7 +586,7 @@ def run_single_scenario(args: argparse.Namespace) -> None:
 
     resolved_layout_id, resolved_layout_path, resolved_layout_type = resolve_layout_reference(
         layout_arg,
-        definition.layout_id,
+        variant.layout_id,
         variant.layout_type,
     )
     print(f"[2/4] Loading layout from {resolved_layout_path}")
