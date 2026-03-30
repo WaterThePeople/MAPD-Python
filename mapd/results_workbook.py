@@ -5,6 +5,7 @@ from pathlib import Path
 from xml.sax.saxutils import escape
 from zipfile import ZIP_DEFLATED, ZipFile
 
+from mapd.collisions import total_collision_count
 from mapd.models import AgentPlan
 
 
@@ -46,8 +47,11 @@ COMPARISON_HEADERS = [
     "strategy",
     "algorithm",
     "assignment_type",
+    "status",
+    "details",
     "makespan",
     "missed_deadlines",
+    "collisions",
     "total_tasks",
 ]
 
@@ -132,12 +136,34 @@ def build_comparison_row(
     strategy: str,
     algorithm: str,
     assignment_type: str,
-    makespan: int,
-    plans: list[AgentPlan],
+    makespan: int | None,
+    plans: list[AgentPlan] | None,
+    *,
+    status: str = "Solved",
+    details: str | None = None,
+    collisions: int | None = None,
+    total_tasks: int | None = None,
 ) -> list[object]:
-    missed_deadlines = sum(len(plan.missed_deadlines) for plan in plans)
-    total_tasks = sum(len(plan.tasks) for plan in plans)
-    return [scenario_name, layout_type, layout_id, strategy, algorithm, assignment_type, makespan, missed_deadlines, total_tasks]
+    missed_deadlines = None if plans is None else sum(len(plan.missed_deadlines) for plan in plans)
+    if collisions is None:
+        collisions = None if plans is None else total_collision_count(plans)
+    if total_tasks is None:
+        total_tasks = 0 if plans is None else sum(len(plan.tasks) for plan in plans)
+
+    return [
+        scenario_name,
+        layout_type,
+        layout_id,
+        strategy,
+        algorithm,
+        assignment_type,
+        status,
+        details,
+        makespan,
+        missed_deadlines,
+        collisions,
+        total_tasks,
+    ]
 
 
 def column_name(index: int) -> str:

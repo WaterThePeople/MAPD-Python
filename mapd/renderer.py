@@ -4,6 +4,7 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
 
+from mapd.collisions import frame_collision_info, frame_agent_positions
 from mapd.models import AgentPlan, Coord
 from mapd.warehouse import WarehouseMap
 
@@ -72,12 +73,14 @@ def draw_header_stats(
     done_count: int,
     total_tasks: int,
     missed_count: int,
+    collision_count: int,
     font,
 ) -> None:
     segments = [
         (f"Time: {time}", (30, 30, 30)),
         (f"Done: {done_count}/{total_tasks}", (30, 30, 30)),
         (f"Missed deadlines: {missed_count}", (180, 40, 40) if missed_count else (30, 30, 30)),
+        (f"Collisions: {collision_count}", (180, 40, 40) if collision_count else (30, 30, 30)),
     ]
 
     x = 8
@@ -456,6 +459,7 @@ def render_frames(
     progress_marks = progress_points(total_frames)
     package_pickups, package_release_times, package_deadlines, tasks_by_coord = build_task_maps(warehouse, plans)
     frame_number_width = max(4, len(str(total_frames - 1)))
+    cumulative_collisions = 0
 
     if debug_frames_dir is not None:
         clear_debug_frames(debug_frames_dir)
@@ -478,6 +482,10 @@ def render_frames(
 
         image = Image.new("RGB", (board_width, total_height), (255, 255, 255))
         draw = ImageDraw.Draw(image)
+        agent_positions = frame_agent_positions(plans, time)
+        collision_info = frame_collision_info(plans, time)
+        collision_coords = collision_info.coords
+        cumulative_collisions += collision_info.pair_count
 
         draw.rectangle((0, 0, board_width, header_height), fill=header_bg, outline=header_border, width=1)
 
@@ -493,7 +501,17 @@ def render_frames(
                 if task.deadline is not None and time > task.deadline and completion_time > task.deadline:
                     missed_count += 1
 
-        draw_header_stats(draw, board_width, header_height, time, done_count, total_tasks, missed_count, font)
+        draw_header_stats(
+            draw,
+            board_width,
+            header_height,
+            time,
+            done_count,
+            total_tasks,
+            missed_count,
+            cumulative_collisions,
+            font,
+        )
 
         for row in range(warehouse.height):
             for col in range(warehouse.width):
@@ -509,7 +527,7 @@ def render_frames(
                         draw_cross(draw, cell_bounds(warehouse, coord, cell_size, header_height), color)
 
         for plan in plans:
-            position = plan.path[time] if time < len(plan.path) else plan.path[-1]
+            position = agent_positions[plan.agent_id]
             label = carried_task_id(plan, time)
             draw_agent(
                 draw,
@@ -518,6 +536,9 @@ def render_frames(
                 label,
                 font,
             )
+
+        for coord in collision_coords:
+            draw_cross(draw, cell_bounds(warehouse, coord, cell_size, header_height), (220, 20, 20))
 
         if debug_frames_dir is not None:
             frame_path = debug_frames_dir / f"frame_{time:0{frame_number_width}d}.png"

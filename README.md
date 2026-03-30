@@ -25,6 +25,9 @@ python main.py --suite 2
 
 # Launches the simulator with custom paramaters
 python main.py --scenario 2 --layout 1 --mode Available --station Available --strategy FCFS --algorithm BFS --type square --gif --debugging
+
+# Launches the simulator with custom parameters and returns a .gif file, even when collisions are present.
+python main.py --scenario 2 --layout 9 --mode Set --station Set --algorithm A* --type square --gif --fallback-gif
 ```
 
 ## Layouts visualization
