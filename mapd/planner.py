@@ -11,7 +11,7 @@ from mapd.strategy import get_strategy
 from mapd.warehouse import WarehouseMap
 
 SOFT_COLLISION_PENALTY = 1000
-MAX_PLANNING_ORDER_ATTEMPTS = 12
+MAX_PLANNING_ORDER_ATTEMPTS = 10
 
 
 class ReservationTable:

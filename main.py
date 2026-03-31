@@ -44,7 +44,8 @@ DEFAULT_RENDER_GIF = False
 DEFAULT_DEBUGGING = False
 DEFAULT_FALLBACK_GIF = False
 DEFAULT_DEBUG_FRAMES_ROOT = Path("debugging")
-FALLBACK_GIF_ORDER_LIMIT = 6
+AUTOMATIC_RELAXED_ORDER_LIMIT = 10
+FALLBACK_GIF_ORDER_LIMIT = 10
 FALLBACK_GIF_TIME_BUDGET_SECONDS = 20.0
 FALLBACK_GIF_SOFT_MAX_EXPANSIONS = 100_000
 DIAGNOSTIC_ORDER_LIMIT = 2
@@ -276,7 +277,7 @@ def render_fallback_gif(
     frame_duration: int,
     debug_frames_dir: Path | None = None,
 ) -> tuple[int, list]:
-    relaxed_plans = build_relaxed_agent_plans(
+    return run_relaxed_simulation(
         warehouse,
         agent_count,
         tasks,
@@ -284,21 +285,60 @@ def render_fallback_gif(
         station_mode,
         strategy,
         algorithm,
-        max_order_attempts=FALLBACK_GIF_ORDER_LIMIT,
-        time_budget_seconds=FALLBACK_GIF_TIME_BUDGET_SECONDS,
-        soft_max_expansions=FALLBACK_GIF_SOFT_MAX_EXPANSIONS,
-    )
-    makespan = render_or_measure(
-        warehouse,
-        relaxed_plans,
         output_path,
         cell_size,
         frame_duration,
         progress=True,
         render_gif=True,
         debug_frames_dir=debug_frames_dir,
+        max_order_attempts=FALLBACK_GIF_ORDER_LIMIT,
+        time_budget_seconds=FALLBACK_GIF_TIME_BUDGET_SECONDS,
+        soft_max_expansions=FALLBACK_GIF_SOFT_MAX_EXPANSIONS,
     )
-    return makespan, relaxed_plans
+
+
+def run_relaxed_simulation(
+    warehouse,
+    agent_count: int,
+    tasks,
+    mode: str,
+    station_mode: str,
+    strategy: str,
+    algorithm: str,
+    output_path: Path | None,
+    cell_size: int,
+    frame_duration: int,
+    progress: bool,
+    render_gif: bool,
+    debug_frames_dir: Path | None = None,
+    *,
+    max_order_attempts: int = AUTOMATIC_RELAXED_ORDER_LIMIT,
+    time_budget_seconds: float = FALLBACK_GIF_TIME_BUDGET_SECONDS,
+    soft_max_expansions: int = FALLBACK_GIF_SOFT_MAX_EXPANSIONS,
+) -> tuple[int, list]:
+    plans = build_relaxed_agent_plans(
+        warehouse,
+        agent_count,
+        tasks,
+        mode,
+        station_mode,
+        strategy,
+        algorithm,
+        max_order_attempts=max_order_attempts,
+        time_budget_seconds=time_budget_seconds,
+        soft_max_expansions=soft_max_expansions,
+    )
+    makespan = render_or_measure(
+        warehouse,
+        plans,
+        output_path,
+        cell_size,
+        frame_duration,
+        progress,
+        render_gif,
+        debug_frames_dir,
+    )
+    return makespan, plans
 
 
 def diagnostic_collision_count(
@@ -548,7 +588,31 @@ def try_run_simulation(
             debug_frames_dir,
         )
     except RuntimeError as exc:
-        return STATUS_NO_SOLUTION, str(exc), None, None
+        try:
+            relaxed_makespan, relaxed_plans = run_relaxed_simulation(
+                warehouse,
+                agent_count,
+                tasks,
+                mode,
+                station_mode,
+                strategy,
+                algorithm,
+                output_path,
+                cell_size,
+                frame_duration,
+                progress,
+                render_gif,
+                debug_frames_dir,
+            )
+        except RuntimeError:
+            return STATUS_NO_SOLUTION, str(exc), None, None
+
+        return (
+            STATUS_NO_SOLUTION,
+            f"{exc} Executed best-effort simulation and counted collisions.",
+            relaxed_makespan,
+            relaxed_plans,
+        )
 
     return STATUS_SOLVED, None, makespan, plans
 
@@ -646,7 +710,7 @@ def run_suite(args: argparse.Namespace) -> None:
             )
             assignment_type = assignment_type_label(variant.mode, variant.station_mode)
             collisions = None
-            if status == STATUS_NO_SOLUTION:
+            if status == STATUS_NO_SOLUTION and plans is None:
                 collisions = diagnostic_collision_count(
                     warehouse,
                     definition.agent_count,
@@ -725,7 +789,6 @@ def run_single_scenario(args: argparse.Namespace) -> None:
     algorithm = args.algorithm or DEFAULT_ALGORITHM
     render_gif = args.gif if "--gif" in explicit_flags else DEFAULT_RENDER_GIF
     debugging = args.debugging if "--debugging" in explicit_flags else DEFAULT_DEBUGGING
-    fallback_gif = args.fallback_gif if "--fallback-gif" in explicit_flags else DEFAULT_FALLBACK_GIF
 
     scenario_path = resolve_scenario_path(scenario_arg)
     print(f"[1/4] Loading scenario from {scenario_path}")
@@ -780,35 +843,41 @@ def run_single_scenario(args: argparse.Namespace) -> None:
         )
     except RuntimeError as exc:
         print(f"[3/4] Planning finished with status: {STATUS_NO_SOLUTION}")
-        if render_gif and fallback_gif and output_path is not None:
-            print(f"[4/4] Rendering fallback GIF to {output_path}")
-            try:
-                makespan, relaxed_plans = render_fallback_gif(
-                    warehouse,
-                    definition.agent_count,
-                    definition.tasks,
-                    variant.mode,
-                    variant.station_mode,
-                    variant.strategy,
-                    variant.algorithm,
-                    output_path,
-                    args.cell_size,
-                    args.frame_duration,
-                    debug_frames_dir=debug_frames_dir,
-                )
-            except RuntimeError as fallback_exc:
-                print_variant_status(STATUS_NO_SOLUTION, f"{exc} Fallback GIF failed: {fallback_exc}")
-                raise SystemExit(1)
+        if render_gif and debug_frames_dir is not None:
+            print(f"[4/4] Running best-effort simulation, rendering GIF to {output_path} and exporting frames to {debug_frames_dir}")
+        elif render_gif:
+            print(f"[4/4] Running best-effort simulation, rendering GIF to {output_path}")
+        elif debug_frames_dir is not None:
+            print(f"[4/4] Running best-effort simulation and exporting frames to {debug_frames_dir}")
+        else:
+            print("[4/4] Running best-effort simulation and counting collisions")
 
-            print_variant_status(
-                STATUS_NO_SOLUTION,
-                f"{exc} Generated fallback GIF with collision-aware best-effort planning; collisions may still appear as a last resort.",
+        try:
+            makespan, relaxed_plans = run_relaxed_simulation(
+                warehouse,
+                definition.agent_count,
+                definition.tasks,
+                variant.mode,
+                variant.station_mode,
+                variant.strategy,
+                variant.algorithm,
+                output_path,
+                args.cell_size,
+                args.frame_duration,
+                progress=True,
+                render_gif=render_gif,
+                debug_frames_dir=debug_frames_dir,
             )
-            print_summary(relaxed_plans, makespan, output_path, variant.station_mode, True, debug_frames_dir)
-            return
+        except RuntimeError as relaxed_exc:
+            print_variant_status(STATUS_NO_SOLUTION, f"{exc} Best-effort simulation failed: {relaxed_exc}")
+            raise SystemExit(1)
 
-        print_variant_status(STATUS_NO_SOLUTION, str(exc))
-        raise SystemExit(1)
+        print_variant_status(
+            STATUS_NO_SOLUTION,
+            f"{exc} Executed best-effort simulation and counted collisions.",
+        )
+        print_summary(relaxed_plans, makespan, output_path, variant.station_mode, render_gif, debug_frames_dir)
+        return
 
     print("[3/4] Route planning finished")
 
