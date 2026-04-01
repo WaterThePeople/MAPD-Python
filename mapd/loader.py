@@ -3,10 +3,16 @@ import re
 from pathlib import Path
 
 from mapd.algorithms import normalize_algorithm_name
-from mapd.models import ScenarioDefinition, ScenarioVariant, Task
+from mapd.models import ScenarioDefinition, ScenarioMetadata, ScenarioVariant, Task
 from mapd.warehouse import WarehouseMap
 
 SUPPORTED_LAYOUT_SIZES = {"small", "medium", "large"}
+SUPPORTED_INFLUX_TYPES = {"random": "Random", "poisson": "Poisson", "burst": "Burst"}
+SUPPORTED_SPATIAL_DISTRIBUTIONS = {
+    "uniform": "Uniform",
+    "hotspot": "Hotspot",
+    "wave": "Wave",
+}
 
 
 def normalize_layout_type(value: str | None) -> str:
@@ -296,44 +302,204 @@ def _parse_layout_size(raw_value: str) -> str:
     return normalize_layout_size(size_items[0])
 
 
+def _find_header_value(text: str, label: str) -> str | None:
+    match = re.search(rf"{re.escape(label)}:\s*([^\r\n]+)", text)
+    if match is None:
+        return None
+    return match.group(1).strip()
+
+
+def _parse_optional_text_header(text: str, label: str) -> str | None:
+    value = _find_header_value(text, label)
+    if value is None:
+        return None
+    return value.strip()
+
+
+def _parse_optional_int_header(
+    text: str,
+    label: str,
+    *,
+    min_value: int | None = None,
+) -> int | None:
+    raw_value = _find_header_value(text, label)
+    if raw_value is None:
+        return None
+
+    try:
+        value = int(raw_value)
+    except ValueError as exc:
+        raise ValueError(f"Scenario header '{label}' must be an integer.") from exc
+
+    if min_value is not None and value < min_value:
+        raise ValueError(f"Scenario header '{label}' must be >= {min_value}.")
+    return value
+
+
+def _parse_optional_float_header(
+    text: str,
+    label: str,
+    *,
+    min_value: float | None = None,
+) -> float | None:
+    raw_value = _find_header_value(text, label)
+    if raw_value is None:
+        return None
+
+    try:
+        value = float(raw_value)
+    except ValueError as exc:
+        raise ValueError(f"Scenario header '{label}' must be a number.") from exc
+
+    if min_value is not None and value < min_value:
+        raise ValueError(f"Scenario header '{label}' must be >= {min_value}.")
+    return value
+
+
+def _normalize_influx(value: str) -> str:
+    key = value.strip().lower()
+    if key not in SUPPORTED_INFLUX_TYPES:
+        raise ValueError(f"Unsupported influx type: {value}")
+    return SUPPORTED_INFLUX_TYPES[key]
+
+
+def _normalize_spatial_distribution(value: str) -> str:
+    key = value.strip().lower()
+    if key not in SUPPORTED_SPATIAL_DISTRIBUTIONS:
+        raise ValueError(f"Unsupported spatial distribution: {value}")
+    return SUPPORTED_SPATIAL_DISTRIBUTIONS[key]
+
+
+def _parse_scenario_metadata(text: str) -> ScenarioMetadata:
+    metadata = ScenarioMetadata(
+        scenario_id=_parse_optional_text_header(text, "ID"),
+        seed=_parse_optional_int_header(text, "Seed", min_value=0),
+        hours=_parse_optional_float_header(text, "Hours", min_value=0.0),
+        step_seconds=_parse_optional_int_header(text, "StepSeconds", min_value=1),
+        time_limit_steps=_parse_optional_int_header(text, "TimeLimitSteps", min_value=1),
+        load_factor=_parse_optional_float_header(text, "LoadFactor", min_value=0.0),
+        tasks_per_agent_per_hour=_parse_optional_float_header(text, "TasksPerAgentPerHour", min_value=0.0),
+        max_open_tasks_on_shelves=_parse_optional_int_header(text, "MaxOpenTasksOnShelves", min_value=1),
+        set_assignment_policy=_parse_optional_text_header(text, "SetAssignmentPolicy"),
+        influx=(
+            _normalize_influx(_find_header_value(text, "Influx"))
+            if _find_header_value(text, "Influx") is not None
+            else None
+        ),
+        lambda_per_hour=_parse_optional_float_header(text, "LambdaPerHour", min_value=0.0),
+        burst_amount=_parse_optional_int_header(text, "BurstAmount", min_value=0),
+        burst_start_step=_parse_optional_int_header(text, "BurstStartStep", min_value=0),
+        burst_duration_steps=_parse_optional_int_header(text, "BurstDurationSteps", min_value=0),
+        burst_amplitude=_parse_optional_float_header(text, "BurstAmplitude", min_value=0.0),
+        spatial_distribution=(
+            _normalize_spatial_distribution(_find_header_value(text, "SpatialDistribution"))
+            if _find_header_value(text, "SpatialDistribution") is not None
+            else None
+        ),
+        hotspot_shelf_share=_parse_optional_float_header(text, "HotspotShelfShare", min_value=0.0),
+        hotspot_task_share=_parse_optional_float_header(text, "HotspotTaskShare", min_value=0.0),
+        wave_zone=_parse_optional_text_header(text, "WaveZone"),
+        wave_radius=_parse_optional_int_header(text, "WaveRadius", min_value=0),
+        deadline_slack_policy=_parse_optional_text_header(text, "DeadlineSlackPolicy"),
+        deadline_slack=_parse_optional_float_header(text, "DeadlineSlack", min_value=0.0),
+        max_replans=_parse_optional_int_header(text, "MaxReplans", min_value=0),
+    )
+    _validate_scenario_metadata(metadata)
+    return metadata
+
+
+def _validate_scenario_metadata(metadata: ScenarioMetadata) -> None:
+    if (
+        metadata.hours is not None
+        and metadata.step_seconds is not None
+        and metadata.time_limit_steps is not None
+    ):
+        expected_time_limit = round(metadata.hours * 3600 / metadata.step_seconds)
+        if metadata.time_limit_steps != expected_time_limit:
+            raise ValueError(
+                "Scenario header 'TimeLimitSteps' must match Hours * 3600 / StepSeconds. "
+                f"Expected {expected_time_limit}, got {metadata.time_limit_steps}."
+            )
+
+    if metadata.hotspot_shelf_share is not None and metadata.hotspot_shelf_share > 1.0:
+        raise ValueError("Scenario header 'HotspotShelfShare' must be <= 1.0.")
+    if metadata.hotspot_task_share is not None and metadata.hotspot_task_share > 1.0:
+        raise ValueError("Scenario header 'HotspotTaskShare' must be <= 1.0.")
+
+    if metadata.influx == "Poisson" and metadata.lambda_per_hour is None:
+        raise ValueError("Scenario header 'LambdaPerHour' is required when Influx is Poisson.")
+    if metadata.influx == "Burst":
+        required_burst_headers = {
+            "BurstAmount": metadata.burst_amount,
+            "BurstStartStep": metadata.burst_start_step,
+            "BurstDurationSteps": metadata.burst_duration_steps,
+            "BurstAmplitude": metadata.burst_amplitude,
+        }
+        missing_headers = [label for label, value in required_burst_headers.items() if value is None]
+        if missing_headers:
+            raise ValueError(
+                "Scenario is missing burst configuration headers: " + ", ".join(missing_headers) + "."
+            )
+
+    if metadata.spatial_distribution == "Hotspot":
+        if metadata.hotspot_shelf_share is None or metadata.hotspot_task_share is None:
+            raise ValueError(
+                "Scenario headers 'HotspotShelfShare' and 'HotspotTaskShare' are required for Hotspot distribution."
+            )
+    if metadata.spatial_distribution == "Wave":
+        if metadata.wave_zone is None or metadata.wave_radius is None:
+            raise ValueError("Scenario headers 'WaveZone' and 'WaveRadius' are required for Wave distribution.")
+
+    if metadata.deadline_slack_policy is not None and metadata.deadline_slack is None:
+        raise ValueError("Scenario header 'DeadlineSlack' is required when DeadlineSlackPolicy is provided.")
+
+
 def load_scenario_definition(path: Path) -> ScenarioDefinition:
     text = path.read_text(encoding="utf-8")
-    agents_match = re.search(r"Agents:\s*(\d+)", text)
-    tasks_match = re.search(r"Tasks:\s*(\d+)", text)
-    size_match = re.search(r"Size:\s*([^\r\n]+)", text)
-    mode_match = re.search(r"Mode:\s*([^\r\n]+)", text)
-    station_match = re.search(r"Station:\s*([^\r\n]+)", text)
-    strategy_match = re.search(r"Strategy:\s*([^\r\n]+)", text)
-    algorithm_match = re.search(r"Algorithm:\s*([^\r\n]+)", text)
-    type_match = re.search(r"Type:\s*([^\r\n]+)", text)
-    layout_match = re.search(r"Layout:\s*([^\r\n]+)", text)
-    if not agents_match or not tasks_match or not mode_match or not station_match or not strategy_match:
+    agents_value = _find_header_value(text, "Agents")
+    tasks_value = _find_header_value(text, "Tasks")
+    size_value = _find_header_value(text, "Size")
+    mode_value = _find_header_value(text, "Mode")
+    station_value = _find_header_value(text, "Station")
+    strategy_value = _find_header_value(text, "Strategy")
+    algorithm_value = _find_header_value(text, "Algorithm")
+    type_value = _find_header_value(text, "Type")
+    layout_value = _find_header_value(text, "Layout")
+    if (
+        agents_value is None
+        or tasks_value is None
+        or mode_value is None
+        or station_value is None
+        or strategy_value is None
+    ):
         raise ValueError(
             "Scenario file must contain 'Agents: N', 'Tasks: N', 'Mode: ...', "
             "'Station: ...' and 'Strategy: ...'."
         )
 
-    agent_count = int(agents_match.group(1))
-    expected_task_count = int(tasks_match.group(1))
-    modes = _parse_choices(mode_match.group(1), _normalize_mode)
-    station_modes = _parse_choices(station_match.group(1), _normalize_station_mode)
-    strategies = _parse_choices(strategy_match.group(1), _normalize_strategy)
-    if algorithm_match is not None:
-        algorithms = _parse_choices(algorithm_match.group(1), normalize_algorithm_name)
+    agent_count = int(agents_value)
+    expected_task_count = int(tasks_value)
+    modes = _parse_choices(mode_value, _normalize_mode)
+    station_modes = _parse_choices(station_value, _normalize_station_mode)
+    strategies = _parse_choices(strategy_value, _normalize_strategy)
+    if algorithm_value is not None:
+        algorithms = _parse_choices(algorithm_value, normalize_algorithm_name)
     else:
         algorithms = ["BFS"]
-    if type_match is not None:
-        layout_types = _parse_choices(type_match.group(1), normalize_layout_type)
+    if type_value is not None:
+        layout_types = _parse_choices(type_value, normalize_layout_type)
     else:
         layout_types = ["square"]
-    layout_size = _parse_layout_size(size_match.group(1)) if size_match is not None else None
+    layout_size = _parse_layout_size(size_value) if size_value is not None else None
 
-    if layout_match is not None:
-        layout_ids = _parse_layout_ids(layout_match.group(1))
+    if layout_value is not None:
+        layout_ids = _parse_layout_ids(layout_value)
     else:
         filename_match = re.search(r"(\d+)(?=\.txt$)", path.name)
         fallback_layout_id = int(filename_match.group(1)) if filename_match is not None else 0
         layout_ids = [fallback_layout_id]
+
+    metadata = _parse_scenario_metadata(text)
 
     tasks: list[Task] = []
     for line in text.splitlines():
@@ -373,6 +539,7 @@ def load_scenario_definition(path: Path) -> ScenarioDefinition:
         station_modes=station_modes,
         strategies=strategies,
         algorithms=algorithms,
+        metadata=metadata,
     )
 
 

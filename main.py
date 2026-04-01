@@ -14,7 +14,7 @@ from mapd.loader import (
     normalize_layout_type,
     resolve_scenario_variant,
 )
-from mapd.models import PlanningStats, VariantExecutionResult
+from mapd.models import PlanningLimitExceeded, PlanningStats, ScenarioDefinition, VariantExecutionResult
 from mapd.planner import build_agent_plans, build_relaxed_agent_plans
 from mapd.report_metrics import (
     algorithm_label,
@@ -454,8 +454,11 @@ def execute_variant(
     progress: bool,
     render_gif: bool,
     debug_frames_dir: Path | None = None,
+    *,
+    time_limit_steps: int | None = None,
+    max_replans: int | None = None,
 ) -> VariantExecutionResult:
-    stats = PlanningStats()
+    stats = PlanningStats(max_replans=max_replans)
     started_at = time.perf_counter()
 
     try:
@@ -488,9 +491,19 @@ def execute_variant(
             debug_frames_dir,
             stats=stats,
         )
+    except PlanningLimitExceeded as exc:
+        return VariantExecutionResult(
+            status=STATUS_NO_SOLUTION,
+            details=str(exc),
+            makespan=None,
+            plans=None,
+            collisions=None,
+            replans=stats.replans,
+            simulation_time_seconds=time.perf_counter() - started_at,
+        )
     except RuntimeError as exc:
-        stats.replans += 1
         try:
+            stats.note_replan()
             relaxed_makespan, relaxed_plans = run_relaxed_simulation(
                 warehouse,
                 agent_count,
@@ -507,6 +520,16 @@ def execute_variant(
                 debug_frames_dir,
                 stats=stats,
             )
+        except PlanningLimitExceeded as relaxed_limit_exc:
+            return VariantExecutionResult(
+                status=STATUS_NO_SOLUTION,
+                details=f"{exc} {relaxed_limit_exc}",
+                makespan=None,
+                plans=None,
+                collisions=None,
+                replans=stats.replans,
+                simulation_time_seconds=time.perf_counter() - started_at,
+            )
         except RuntimeError as relaxed_exc:
             return VariantExecutionResult(
                 status=STATUS_NO_SOLUTION,
@@ -518,24 +541,30 @@ def execute_variant(
                 simulation_time_seconds=time.perf_counter() - started_at,
             )
 
-        return VariantExecutionResult(
-            status=STATUS_NO_SOLUTION,
-            details=str(exc),
-            makespan=relaxed_makespan,
-            plans=relaxed_plans,
-            collisions=total_collision_count(relaxed_plans),
-            replans=stats.replans,
-            simulation_time_seconds=time.perf_counter() - started_at,
+        return apply_time_limit(
+            VariantExecutionResult(
+                status=STATUS_NO_SOLUTION,
+                details=str(exc),
+                makespan=relaxed_makespan,
+                plans=relaxed_plans,
+                collisions=total_collision_count(relaxed_plans),
+                replans=stats.replans,
+                simulation_time_seconds=time.perf_counter() - started_at,
+            ),
+            time_limit_steps,
         )
 
-    return VariantExecutionResult(
-        status=STATUS_SOLVED,
-        details=None,
-        makespan=makespan,
-        plans=plans,
-        collisions=total_collision_count(plans),
-        replans=stats.replans,
-        simulation_time_seconds=time.perf_counter() - started_at,
+    return apply_time_limit(
+        VariantExecutionResult(
+            status=STATUS_SOLVED,
+            details=None,
+            makespan=makespan,
+            plans=plans,
+            collisions=total_collision_count(plans),
+            replans=stats.replans,
+            simulation_time_seconds=time.perf_counter() - started_at,
+        ),
+        time_limit_steps,
     )
 
 
@@ -596,7 +625,7 @@ def variant_result_summary(
         parts.append(f"gif={output_path}")
     if result.plans is not None and debug_frames_dir is not None:
         parts.append(f"frames={debug_frames_dir}")
-    if result.plans is None and result.details is not None:
+    if result.details is not None:
         parts.append(f"details={result.details}")
 
     return ", ".join(parts)
@@ -607,7 +636,47 @@ def default_layout_argument() -> str | None:
 
 
 def default_scenario_argument() -> str:
+    scenario_files = sorted(Path("scenarios").rglob("*.txt"))
+    if len(scenario_files) == 1:
+        return str(scenario_files[0].relative_to(Path("scenarios")))
     return DEFAULT_SCENARIO
+
+
+def scenario_name(definition: ScenarioDefinition, scenario_path: Path) -> str:
+    return definition.metadata.scenario_id or scenario_path.stem
+
+
+def validate_scenario_metadata(
+    definition: ScenarioDefinition,
+    warehouse,
+) -> None:
+    max_open_tasks = definition.metadata.max_open_tasks_on_shelves
+    if max_open_tasks is not None and max_open_tasks > warehouse.shelf_count:
+        raise ValueError(
+            f"Scenario allows {max_open_tasks} open shelf tasks, but layout contains only {warehouse.shelf_count} shelves."
+        )
+
+
+def apply_time_limit(
+    result: VariantExecutionResult,
+    time_limit_steps: int | None,
+) -> VariantExecutionResult:
+    if time_limit_steps is None or result.makespan is None or result.makespan <= time_limit_steps:
+        return result
+
+    detail = f"Scenario time limit exceeded: makespan {result.makespan} > {time_limit_steps} steps."
+    if result.details is not None:
+        detail = f"{result.details} {detail}"
+
+    return VariantExecutionResult(
+        status=STATUS_NO_SOLUTION,
+        details=detail,
+        makespan=result.makespan,
+        plans=result.plans,
+        collisions=result.collisions,
+        replans=result.replans,
+        simulation_time_seconds=result.simulation_time_seconds,
+    )
 
 
 def build_debug_frames_dir(scenario_path: Path) -> Path:
@@ -641,6 +710,7 @@ def run_suite(args: argparse.Namespace) -> None:
 
     variant_index = 0
     for scenario_path, definition, variants in suite_entries:
+        scenario_label = scenario_name(definition, scenario_path)
         for variant in variants:
             variant_index += 1
             prefix = f"[{variant_index}/{total_variants}]"
@@ -661,8 +731,9 @@ def run_suite(args: argparse.Namespace) -> None:
                 )
 
             resolved_layout_id, _, _, warehouse = warehouse_cache[cache_key]
+            validate_scenario_metadata(definition, warehouse)
             current_label = variant_label(
-                scenario_path.stem,
+                scenario_label,
                 definition.layout_size,
                 resolved_layout_id,
                 variant.layout_type,
@@ -675,7 +746,7 @@ def run_suite(args: argparse.Namespace) -> None:
             print(
                 f"{prefix} "
                 + variant_description(
-                    scenario_path.stem,
+                    scenario_label,
                     resolved_layout_id,
                     definition.layout_size,
                     variant.layout_type,
@@ -699,6 +770,8 @@ def run_suite(args: argparse.Namespace) -> None:
                 args.frame_duration,
                 progress=False,
                 render_gif=args.gif,
+                time_limit_steps=definition.metadata.time_limit_steps,
+                max_replans=definition.metadata.max_replans,
             )
 
             print(
@@ -714,7 +787,7 @@ def run_suite(args: argparse.Namespace) -> None:
 
             comparison_rows.append(
                 build_comparison_row(
-                    scenario_path.stem,
+                    scenario_label,
                     resolved_layout_id,
                     definition.layout_size,
                     variant.layout_type,
@@ -748,6 +821,7 @@ def run_single_scenario(args: argparse.Namespace) -> None:
 
     scenario_path = resolve_scenario_path(scenario_arg)
     definition = load_scenario_definition(scenario_path)
+    scenario_label = scenario_name(definition, scenario_path)
     variant = resolve_scenario_variant(
         definition,
         layout_id=infer_layout_id(layout_arg),
@@ -765,6 +839,7 @@ def run_single_scenario(args: argparse.Namespace) -> None:
         definition.layout_size,
     )
     warehouse = load_layout(resolved_layout_path, resolved_layout_type)
+    validate_scenario_metadata(definition, warehouse)
 
     output_path = build_single_gif_output_path(args.output) if render_gif else None
     debug_frames_dir = build_debug_frames_dir(scenario_path) if debugging else None
@@ -773,7 +848,7 @@ def run_single_scenario(args: argparse.Namespace) -> None:
     print(
         f"{prefix} "
         + variant_description(
-            scenario_path.stem,
+            scenario_label,
             resolved_layout_id,
             definition.layout_size,
             variant.layout_type,
@@ -798,6 +873,8 @@ def run_single_scenario(args: argparse.Namespace) -> None:
         progress=False,
         render_gif=render_gif,
         debug_frames_dir=debug_frames_dir,
+        time_limit_steps=definition.metadata.time_limit_steps,
+        max_replans=definition.metadata.max_replans,
     )
     print(
         "  "

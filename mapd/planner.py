@@ -958,7 +958,7 @@ def relocate_finished_agent(
         return False
     blocker_plan.path = merge_segments(updated_path, back_to_station)
     if stats is not None:
-        stats.replans += 1
+        stats.note_replan()
     return True
 
 
@@ -1052,7 +1052,7 @@ def build_agent_plans_once(
             if blocker_coord in blocked_cells:
                 raise RuntimeError("Could not resolve a repeated station-lane conflict during replanning.")
             if stats is not None:
-                stats.replans += 1
+                stats.note_replan()
             blocked_cells.add(blocker_coord)
 
         plans_by_id[agent_id] = plan
@@ -1085,7 +1085,7 @@ def build_agent_plans(
     last_error: RuntimeError | None = None
     for attempt_index, planning_order in enumerate(planning_orders):
         if attempt_index > 0 and stats is not None:
-            stats.replans += 1
+            stats.note_replan()
         try:
             return build_agent_plans_once(
                 warehouse,
@@ -1144,7 +1144,7 @@ def build_relaxed_agent_plans(
 
     for attempt_index, planning_order in enumerate(planning_orders):
         if attempt_index > 0 and stats is not None:
-            stats.replans += 1
+            stats.note_replan()
         if deadline is not None and time.perf_counter() >= deadline:
             last_error = RuntimeError("Fallback planning exceeded the time budget.")
             break
