@@ -12,13 +12,10 @@ Algorithm: [A*,SIPP,BFS]
 
 Agents: 5
 Tasks: 10
-Hours: 1
-StepSeconds: 2
-TimeLimitSteps: 1800
-LoadFactor: 1.00
+DurationSeconds: 3600
+StepSeconds: 10
+TimeLimitSteps: 360
 TasksPerAgentPerHour: 10
-MaxOpenTasksOnShelves: 120
-SetAssignmentPolicy: RoundRobin
 
 Influx: Poisson
 LambdaPerHour: 50

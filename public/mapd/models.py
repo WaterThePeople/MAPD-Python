@@ -46,10 +46,14 @@ class ScenarioMetadata:
     scenario_id: str | None = None
     seed: int | None = None
     hours: float | None = None
+    duration_seconds: int | None = None
     step_seconds: int | None = None
     time_limit_steps: int | None = None
     load_factor: float | None = None
     tasks_per_agent_per_hour: float | None = None
+    capacity_model: str | None = None
+    capacity_reserve: float | None = None
+    capacity_steps_per_task: float | None = None
     max_open_tasks_on_shelves: int | None = None
     set_assignment_policy: str | None = None
     influx: str | None = None

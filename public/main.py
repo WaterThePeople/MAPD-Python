@@ -34,12 +34,13 @@ from mapd.results_workbook import (
     build_comparison_row,
     write_xlsx_workbook,
 )
+from mapd.paths import DEBUGGING_ROOT, GIFS_ROOT, LAYOUTS_ROOT, PROJECT_ROOT, RESULTS_ROOT, SCENARIOS_ROOT
 DEFAULT_LAYOUT_TYPE = "square"
 DEFAULT_SCENARIO = "0.txt"
 DEFAULT_SCENARIO_SUITE = "0"
 DEFAULT_OUTPUT = "simulation.gif"
-DEFAULT_SUITE_OUTPUT_DIR = "gifs"
-DEFAULT_RESULTS_DIR = "results"
+DEFAULT_SUITE_OUTPUT_DIR = GIFS_ROOT
+DEFAULT_RESULTS_DIR = RESULTS_ROOT
 DEFAULT_CELL_SIZE = 48
 DEFAULT_FRAME_DURATION = 250
 DEFAULT_MODE = "Set"
@@ -49,7 +50,7 @@ DEFAULT_ALGORITHM = "BFS"
 DEFAULT_RENDER_GIF = False
 DEFAULT_DEBUGGING = False
 DEFAULT_FALLBACK_GIF = False
-DEFAULT_DEBUG_FRAMES_ROOT = Path("debugging")
+DEFAULT_DEBUG_FRAMES_ROOT = DEBUGGING_ROOT
 AUTOMATIC_RELAXED_ORDER_LIMIT = 10
 FALLBACK_GIF_TIME_BUDGET_SECONDS = 20.0
 FALLBACK_GIF_SOFT_MAX_EXPANSIONS = 100_000
@@ -248,10 +249,13 @@ def run_relaxed_simulation(
 def resolve_scenario_path(scenario_arg: str) -> Path:
     requested = Path(scenario_arg)
     candidates = []
-    root = Path("scenarios")
+    root = SCENARIOS_ROOT
 
     if requested.is_file():
         return requested
+    project_relative = PROJECT_ROOT / requested
+    if project_relative.is_file():
+        return project_relative
 
     if requested.suffix:
         candidates.append(root / requested)
@@ -276,6 +280,12 @@ def resolve_scenario_path(scenario_arg: str) -> Path:
 def derive_suite_paths(suite_arg: str) -> tuple[str, list[Path]]:
     scenario_path = resolve_scenario_path(suite_arg)
     return scenario_path.stem, [scenario_path]
+
+
+def safe_results_name(value: str) -> str:
+    sanitized = re.sub(r'[<>:"/\\|?*]+', "_", value).strip()
+    sanitized = sanitized.rstrip(". ")
+    return sanitized or "results"
 
 
 def variant_filename_token(value: str) -> str:
@@ -317,11 +327,14 @@ def resolve_layout_override_path(layout_arg: str) -> Path:
 
     if requested.is_file():
         return requested
+    project_relative = PROJECT_ROOT / requested
+    if project_relative.is_file():
+        return project_relative
 
-    candidates.append(Path("layouts") / requested)
+    candidates.append(LAYOUTS_ROOT / requested)
     if requested.suffix.lower() not in {".json", ".txt"}:
-        candidates.append(Path("layouts") / f"{layout_arg}.json")
-        candidates.append(Path("layouts") / f"{layout_arg}.txt")
+        candidates.append(LAYOUTS_ROOT / f"{layout_arg}.json")
+        candidates.append(LAYOUTS_ROOT / f"{layout_arg}.txt")
 
     for candidate in candidates:
         if candidate.is_file():
@@ -636,9 +649,9 @@ def default_layout_argument() -> str | None:
 
 
 def default_scenario_argument() -> str:
-    scenario_files = sorted(Path("scenarios").rglob("*.txt"))
+    scenario_files = sorted(SCENARIOS_ROOT.rglob("*.txt"))
     if len(scenario_files) == 1:
-        return str(scenario_files[0].relative_to(Path("scenarios")))
+        return str(scenario_files[0].relative_to(SCENARIOS_ROOT))
     return DEFAULT_SCENARIO
 
 
@@ -684,7 +697,9 @@ def build_debug_frames_dir(scenario_path: Path) -> Path:
 
 
 def build_single_gif_output_path(output_arg: str | None) -> Path:
-    requested = Path(output_arg or DEFAULT_OUTPUT)
+    if output_arg is None:
+        return DEFAULT_SUITE_OUTPUT_DIR / DEFAULT_OUTPUT
+    requested = Path(output_arg)
     if requested.is_absolute() or requested.parent != Path("."):
         return requested
     return Path(DEFAULT_SUITE_OUTPUT_DIR) / requested
@@ -793,6 +808,7 @@ def run_suite(args: argparse.Namespace) -> None:
                     variant.layout_type,
                     definition.agent_count,
                     len(definition.tasks),
+                    definition.metadata,
                     variant.mode,
                     variant.station_mode,
                     variant.strategy,
@@ -802,7 +818,11 @@ def run_suite(args: argparse.Namespace) -> None:
                 )
             )
 
-    results_path = Path(args.results_dir) / f"{suite_name}.xlsx"
+    if len(suite_entries) == 1:
+        results_name = scenario_name(suite_entries[0][1], suite_entries[0][0])
+    else:
+        results_name = suite_name
+    results_path = Path(args.results_dir) / f"{safe_results_name(results_name)}.xlsx"
     write_xlsx_workbook(results_path, [("Overall Comparison", comparison_rows)])
     print(f"[done] Saved results: {results_path}")
 

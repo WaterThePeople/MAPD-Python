@@ -16,15 +16,22 @@ from mapd.report_metrics import (
     throughput,
     wait_step_count,
 )
-from mapd.models import Coord, VariantExecutionResult
+from mapd.models import Coord, ScenarioMetadata, VariantExecutionResult
 
 COMPARISON_HEADERS = [
     "scenario",
+    "seed",
     "layout",
     "size",
     "type",
     "agents",
     "tasks",
+    "duration seconds",
+    "time limit steps",
+    "tasks per agent per hour",
+    "influx",
+    "spatial distribution",
+    "deadline slack",
     "mode",
     "station",
     "strategy",
@@ -47,6 +54,7 @@ def build_comparison_row(
     layout_type: str,
     agent_count: int,
     task_count: int,
+    metadata: ScenarioMetadata,
     mode: str,
     station_mode: str,
     strategy: str,
@@ -57,11 +65,18 @@ def build_comparison_row(
     plans = result.plans
     return [
         scenario_name,
+        metadata.seed,
         layout_id,
         layout_size_label(layout_size),
         layout_type,
         agent_count,
         task_count,
+        metadata.duration_seconds,
+        metadata.time_limit_steps,
+        metadata.tasks_per_agent_per_hour,
+        metadata.influx,
+        metadata.spatial_distribution,
+        metadata.deadline_slack,
         mode_label(mode),
         mode_label(station_mode),
         strategy_label(strategy),

@@ -4,6 +4,7 @@ from pathlib import Path
 
 from mapd.algorithms import normalize_algorithm_name
 from mapd.models import ScenarioDefinition, ScenarioMetadata, ScenarioVariant, Task
+from mapd.paths import LAYOUTS_ROOT
 from mapd.warehouse import WarehouseMap
 
 SUPPORTED_LAYOUT_SIZES = {"small", "medium", "large"}
@@ -92,7 +93,7 @@ def layout_path(
 ) -> Path:
     normalized_layout_type = normalize_layout_type(layout_type) if layout_type is not None else None
     normalized_layout_size = normalize_layout_size(layout_size) if layout_size is not None else None
-    root = Path("layouts") if layouts_root is None else layouts_root
+    root = LAYOUTS_ROOT if layouts_root is None else layouts_root
 
     if normalized_layout_size is not None:
         sized_match = _find_layout_in_directory(root / normalized_layout_size, layout_id)
@@ -375,10 +376,14 @@ def _parse_scenario_metadata(text: str) -> ScenarioMetadata:
         scenario_id=_parse_optional_text_header(text, "ID"),
         seed=_parse_optional_int_header(text, "Seed", min_value=0),
         hours=_parse_optional_float_header(text, "Hours", min_value=0.0),
+        duration_seconds=_parse_optional_int_header(text, "DurationSeconds", min_value=1),
         step_seconds=_parse_optional_int_header(text, "StepSeconds", min_value=1),
         time_limit_steps=_parse_optional_int_header(text, "TimeLimitSteps", min_value=1),
         load_factor=_parse_optional_float_header(text, "LoadFactor", min_value=0.0),
         tasks_per_agent_per_hour=_parse_optional_float_header(text, "TasksPerAgentPerHour", min_value=0.0),
+        capacity_model=_parse_optional_text_header(text, "CapacityModel"),
+        capacity_reserve=_parse_optional_float_header(text, "CapacityReserve", min_value=0.0),
+        capacity_steps_per_task=_parse_optional_float_header(text, "CapacityStepsPerTask", min_value=0.0),
         max_open_tasks_on_shelves=_parse_optional_int_header(text, "MaxOpenTasksOnShelves", min_value=1),
         set_assignment_policy=_parse_optional_text_header(text, "SetAssignmentPolicy"),
         influx=(
@@ -409,7 +414,30 @@ def _parse_scenario_metadata(text: str) -> ScenarioMetadata:
 
 
 def _validate_scenario_metadata(metadata: ScenarioMetadata) -> None:
+    if metadata.duration_seconds is not None and metadata.hours is not None:
+        expected_duration = round(metadata.hours * 3600)
+        if metadata.duration_seconds != expected_duration:
+            raise ValueError(
+                "Scenario headers 'Hours' and 'DurationSeconds' must describe the same duration. "
+                f"Expected DurationSeconds={expected_duration}, got {metadata.duration_seconds}."
+            )
+
     if (
+        metadata.duration_seconds is not None
+        and metadata.step_seconds is not None
+        and metadata.time_limit_steps is not None
+    ):
+        if metadata.duration_seconds % metadata.step_seconds != 0:
+            raise ValueError(
+                "Scenario header 'DurationSeconds' must be divisible by 'StepSeconds'."
+            )
+        expected_time_limit = metadata.duration_seconds // metadata.step_seconds
+        if metadata.time_limit_steps != expected_time_limit:
+            raise ValueError(
+                "Scenario header 'TimeLimitSteps' must match DurationSeconds / StepSeconds. "
+                f"Expected {expected_time_limit}, got {metadata.time_limit_steps}."
+            )
+    elif (
         metadata.hours is not None
         and metadata.step_seconds is not None
         and metadata.time_limit_steps is not None

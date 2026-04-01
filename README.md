@@ -1,12 +1,8 @@
 # Multi-Agent Pickup and Delivery
 
-This is a repository that contains the simulator for MAPD in a warehouse environment. 
-The layouts of warehouses are in the "layout" folder.
-The scenarios are in the "scenarios" folder.
-The "mapd" folder contains all of the code written for the simulator.
-While using the program you can visualize the output in the form of a .gif file, which will be generated into the "gifs" folder.
-By launching the simulator with all of its scenario variants, the .xlsx file that contains the results of the simulation will be generated into the "results" folder.
-Debugging option generates frames of a GIF in the "debugging" folder.
+This is a repository that contains the simulator for MAPD in a warehouse environment.
+The application code, layouts and scenarios are in the `public/` folder.
+Generated GIF files, Excel reports and debug frames are saved in the `local/` folder.
 
 ## Technology
 - Python 3.14.0
@@ -15,20 +11,47 @@ Debugging option generates frames of a GIF in the "debugging" folder.
 ## Usage
 ```
 # Launches the simulator with the default settings
-python main.py
+python public/main.py
 
 # Launches the simulator with a single scenario and saves the frames for debugging
-python main.py --scenario 0_map0.txt --debugging
+python public/main.py --scenario example.txt --debugging
 
 # Launches the simulator with all of its scenario variants
-python main.py --suite 2
+python public/main.py --suite example
 
 # Launches the simulator with custom paramaters
-python main.py --scenario 2 --layout 1 --mode Available --station Available --strategy FCFS --algorithm BFS --type square --gif --debugging
+python public/main.py --scenario example.txt --layout 0 --mode Available --station Available --strategy FCFS --algorithm BFS --type square --gif --debugging
 
 # Launches the simulator with custom parameters and returns a .gif file, even when collisions are present.
-python main.py --scenario 2 --layout 9 --mode Set --station Set --algorithm A* --type square --gif --fallback-gif
+python public/main.py --scenario example.txt --layout 0 --mode Set --station Set --algorithm A* --type square --gif --fallback-gif
 ```
 
+## Scenario generator
+```
+# Generates a full scenario batch for layout 0
+python public/generator.py 5 360 0
+
+# Generates a full scenario batch for layouts 0 and 1 with a fixed seed
+python public/generator.py 20 720 0,1 --seed 123456
+```
+
+The second generator argument is the maximum makespan in steps.
+One simulation action takes `10` seconds, so:
+- `1` step = `10` seconds
+- `360` steps = `3600` seconds = `1` hour
+- `720` steps = `7200` seconds = `2` hours
+
+The generator creates a dedicated folder in `public/scenarios/`:
+`public/scenarios/<agents>-<tasks>-<size>-<time_limit_steps>-<seed>/`
+
+Example:
+`public/scenarios/10-79-small-360-123456/`
+
+For every provided layout the generator creates all combinations of:
+- `Influx`: `Random`, `Poisson`, `Burst`
+- `SpatialDistribution`: `Uniform`, `Hotspot`, `Wave`
+
+That means `9` scenarios per layout.
+
 ## Layouts visualization
-By creating a simple live server of the layouts.html file in the "layouts" folder, it is possible to see the layouts of the warehouses of the simulator.
+By creating a simple live server of the `public/layouts/layouts.html` file, it is possible to see the layouts of the warehouses of the simulator.
