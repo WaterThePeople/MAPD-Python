@@ -461,6 +461,9 @@ def render_frames(
     header_border = (200, 200, 200)
 
     for time in range(total_frames):
+        if progress:
+            print(f"\r[gif] Rendered frames: {time + 1}/{total_frames}", end="", flush=True)
+
         image = Image.new("RGB", (board_width, total_height), (255, 255, 255))
         draw = ImageDraw.Draw(image)
         agent_positions = frame_agent_positions(plans, time)
@@ -538,5 +541,8 @@ def render_frames(
             loop=0,
             optimize=False,
         )
+
+    if progress:
+        print()
 
     return max_time
