@@ -83,7 +83,7 @@ def build_parser() -> argparse.ArgumentParser:
         nargs="?",
         const=DEFAULT_SCENARIO_SUITE,
         help=(
-            "Run every variant from a scenario definition, for example '--suite 2'. "
+            "Run every variant from a scenario file or from every scenario in a folder, for example '--suite 2'. "
             f"If the value is omitted, '{DEFAULT_SCENARIO_SUITE}' is used."
         ),
     )
@@ -277,9 +277,39 @@ def resolve_scenario_path(scenario_arg: str) -> Path:
     raise ValueError(f"Scenario name is ambiguous: {scenario_arg} -> {', '.join(str(path) for path in matches)}")
 
 
+def resolve_scenario_directory_path(directory_arg: str) -> Path:
+    requested = Path(directory_arg)
+    candidates = [
+        requested,
+        PROJECT_ROOT / requested,
+        SCENARIOS_ROOT / requested,
+    ]
+
+    for candidate in candidates:
+        if candidate.is_dir():
+            return candidate
+
+    matches = sorted(path for path in SCENARIOS_ROOT.rglob(requested.name) if path.is_dir())
+    if len(matches) == 1:
+        return matches[0]
+    if not matches:
+        raise FileNotFoundError(f"Scenario directory not found: {directory_arg}")
+    raise ValueError(
+        f"Scenario directory name is ambiguous: {directory_arg} -> {', '.join(str(path) for path in matches)}"
+    )
+
+
 def derive_suite_paths(suite_arg: str) -> tuple[str, list[Path]]:
-    scenario_path = resolve_scenario_path(suite_arg)
-    return scenario_path.stem, [scenario_path]
+    try:
+        scenario_directory = resolve_scenario_directory_path(suite_arg)
+    except FileNotFoundError:
+        scenario_path = resolve_scenario_path(suite_arg)
+        return scenario_path.stem, [scenario_path]
+
+    scenario_paths = sorted(scenario_directory.rglob("*.txt"))
+    if not scenario_paths:
+        raise FileNotFoundError(f"No scenario files found in directory: {suite_arg}")
+    return scenario_directory.name, scenario_paths
 
 
 def safe_results_name(value: str) -> str:

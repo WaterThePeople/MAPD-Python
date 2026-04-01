@@ -19,6 +19,9 @@ python public/main.py --scenario example.txt --debugging
 # Launches the simulator with all of its scenario variants
 python public/main.py --suite example
 
+# Launches the simulator for every scenario file inside a generated folder
+python public/main.py --suite 10-60-small-360-63234971
+
 # Launches the simulator with custom paramaters
 python public/main.py --scenario example.txt --layout 0 --mode Available --station Available --strategy FCFS --algorithm BFS --type square --gif --debugging
 
@@ -34,7 +37,7 @@ python public/generator.py 5 360 0
 # Generates a full scenario batch for layouts 0 and 1 with a fixed seed
 python public/generator.py 20 720 0,1 --seed 123456
 ```
-
+The first generator argument is the number of agents.
 The second generator argument is the maximum makespan in steps.
 One simulation action takes `10` seconds, so:
 - `1` step = `10` seconds

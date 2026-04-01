@@ -1,0 +1,98 @@
+ID: 10-60-small-360-526331836-0
+Seed: 526331836
+
+Size: Small
+Layout: [0]
+Type: [Square, Hexagon, Triangle]
+
+Mode: [Set, Available]
+Station: [Set, Available]
+Strategy: [FCFS, Robin, GreedyCost]
+Algorithm: [A*, SIPP, BFS]
+
+Agents: 10
+Tasks: 60
+DurationSeconds: 3600
+StepSeconds: 10
+TimeLimitSteps: 360
+TasksPerAgentPerHour: 6.08
+
+Influx: Random
+LambdaPerHour: 60
+BurstAmount: 18
+BurstStartStep: 123
+BurstDurationSteps: 62
+BurstAmplitude: 3.00
+
+SpatialDistribution: Uniform
+HotspotShelfShare: 0.10
+HotspotTaskShare: 0.70
+WaveZone: Center
+WaveRadius: 12
+
+DeadlineSlackPolicy: DensityBased
+DeadlineSlack: 0.35
+
+MaxReplans: 5
+
+Task Agent Shelf Time Deadline
+1 0 105 10 86
+2 1 40 28 45
+3 2 114 35 114
+4 3 68 41 109
+5 4 54 49 82
+6 5 115 49 125
+7 6 81 50 75
+8 7 76 50 115
+9 8 39 55 128
+10 9 50 55 64
+11 0 108 56 140
+12 1 42 60 82
+13 2 46 61 94
+14 3 81 62 89
+15 4 86 69 110
+16 5 102 70 130
+17 6 26 72 143
+18 7 21 73 127
+19 8 40 85 94
+20 9 1 86 111
+21 0 116 87 174
+22 1 17 105 138
+23 2 73 110 175
+24 3 64 110 167
+25 4 80 115 140
+26 5 57 119 157
+27 6 81 125 150
+28 7 42 126 140
+29 8 9 138 187
+30 9 75 140 200
+31 0 60 144 196
+32 1 97 147 201
+33 2 114 150 229
+34 3 104 159 227
+35 4 25 161 226
+36 5 99 165 219
+37 6 19 187 225
+38 7 21 203 257
+39 8 47 204 237
+40 9 48 206 239
+41 0 104 207 280
+42 1 20 210 254
+43 2 54 236 272
+44 3 30 238 282
+45 4 34 242 296
+46 5 31 243 287
+47 6 53 244 271
+48 7 112 247 312
+49 8 13 250 275
+50 9 51 259 276
+51 0 88 261 313
+52 1 41 263 282
+53 2 83 272 308
+54 3 41 283 300
+55 4 13 291 310
+56 5 92 296 332
+57 6 97 298 347
+58 7 64 298 350
+59 8 89 299 343
+60 9 100 302 351
