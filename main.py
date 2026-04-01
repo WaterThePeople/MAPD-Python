@@ -1,6 +1,7 @@
 ﻿import argparse
 import re
 import sys
+import time
 from pathlib import Path
 
 from mapd.collisions import total_collision_count
@@ -13,21 +14,26 @@ from mapd.loader import (
     normalize_layout_type,
     resolve_scenario_variant,
 )
+from mapd.models import PlanningStats, VariantExecutionResult
 from mapd.planner import build_agent_plans, build_relaxed_agent_plans
+from mapd.report_metrics import (
+    algorithm_label,
+    distance_step_sum,
+    format_duration,
+    layout_size_label,
+    missed_deadline_count,
+    mode_label,
+    status_label,
+    strategy_label,
+    throughput,
+    wait_step_count,
+)
 from mapd.renderer import render_frames
 from mapd.results_workbook import (
     COMPARISON_HEADERS,
-    SUMMARY_HEADERS,
-    TASKS_HEADERS,
-    assignment_type_label,
     build_comparison_row,
-    build_summary_rows,
-    build_tasks_rows,
     write_xlsx_workbook,
 )
-
-# Default settings
-DEFAULT_LAYOUT = "0.json"
 DEFAULT_LAYOUT_TYPE = "square"
 DEFAULT_SCENARIO = "0.txt"
 DEFAULT_SCENARIO_SUITE = "0"
@@ -45,12 +51,8 @@ DEFAULT_DEBUGGING = False
 DEFAULT_FALLBACK_GIF = False
 DEFAULT_DEBUG_FRAMES_ROOT = Path("debugging")
 AUTOMATIC_RELAXED_ORDER_LIMIT = 10
-FALLBACK_GIF_ORDER_LIMIT = 10
 FALLBACK_GIF_TIME_BUDGET_SECONDS = 20.0
 FALLBACK_GIF_SOFT_MAX_EXPANSIONS = 100_000
-DIAGNOSTIC_ORDER_LIMIT = 2
-DIAGNOSTIC_TIME_BUDGET_SECONDS = 3.0
-DIAGNOSTIC_SOFT_MAX_EXPANSIONS = 20_000
 
 STATUS_SOLVED = "Solved"
 STATUS_NO_SOLUTION = "No solution"
@@ -86,7 +88,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--layout",
-        help=f"Layout id, file name or path for a single scenario run. Default: {DEFAULT_LAYOUT}",
+        help="Layout id, file name or path for a single scenario run. By default the layout from the scenario is used.",
     )
     parser.add_argument(
         "--type",
@@ -197,106 +199,6 @@ def validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace, exp
         parser.error("--suite cannot be combined with: " + ", ".join(unsupported))
 
 
-def summary_lines(
-    plans,
-    makespan: int,
-    output_path: Path | None,
-    station_mode: str,
-    gif_rendered: bool,
-    debug_frames_dir: Path | None = None,
-) -> list[str]:
-    lines = []
-    collision_count = total_collision_count(plans)
-    if gif_rendered:
-        lines.append(f"[done] Generated GIF: {output_path}")
-    else:
-        lines.append("[done] GIF rendering skipped")
-    if debug_frames_dir is not None:
-        lines.append(f"[done] Exported {makespan + 1} debug frames: {debug_frames_dir}")
-    lines.append(f"[done] Makespan: {makespan} steps")
-    lines.append(f"[done] Collisions: {collision_count}")
-    lines.append("")
-    station_label = "station" if station_mode == "Set" else "start station"
-    for plan in plans:
-        task_parts = []
-        for task in plan.tasks:
-            deadline = "none" if task.deadline is None else str(task.deadline)
-            completion = plan.completion_times.get(task.task_id)
-            late = ""
-            if task.deadline is not None and completion is not None and completion > task.deadline:
-                late = f",late={completion - task.deadline}"
-            task_parts.append(
-                f"{task.task_id}@s{task.shelf_index}[t={task.release_time},d={deadline}{late}]"
-            )
-
-        task_description = ", ".join(task_parts) or "no tasks"
-        lines.append(
-            f"Agent {plan.agent_id}: {station_label} {plan.home_index}, "
-            f"path length {len(plan.path) - 1}, tasks [{task_description}]"
-        )
-
-    late_tasks = []
-    for plan in plans:
-        for task_id in plan.missed_deadlines:
-            late_tasks.append((plan.agent_id, task_id))
-    if late_tasks:
-        lines.append("")
-        lines.append("[warn] Missed deadlines:")
-        for agent_id, task_id in late_tasks:
-            lines.append(f"  agent {agent_id}, task {task_id}")
-    return lines
-
-
-def print_summary(
-    plans,
-    makespan: int,
-    output_path: Path | None,
-    station_mode: str,
-    gif_rendered: bool,
-    debug_frames_dir: Path | None = None,
-) -> None:
-    for line in summary_lines(plans, makespan, output_path, station_mode, gif_rendered, debug_frames_dir):
-        print(line)
-
-
-def print_variant_status(status: str, details: str) -> None:
-    print(f"[done] Status: {status}")
-    print(f"[done] Details: {details}")
-
-
-def render_fallback_gif(
-    warehouse,
-    agent_count: int,
-    tasks,
-    mode: str,
-    station_mode: str,
-    strategy: str,
-    algorithm: str,
-    output_path: Path,
-    cell_size: int,
-    frame_duration: int,
-    debug_frames_dir: Path | None = None,
-) -> tuple[int, list]:
-    return run_relaxed_simulation(
-        warehouse,
-        agent_count,
-        tasks,
-        mode,
-        station_mode,
-        strategy,
-        algorithm,
-        output_path,
-        cell_size,
-        frame_duration,
-        progress=True,
-        render_gif=True,
-        debug_frames_dir=debug_frames_dir,
-        max_order_attempts=FALLBACK_GIF_ORDER_LIMIT,
-        time_budget_seconds=FALLBACK_GIF_TIME_BUDGET_SECONDS,
-        soft_max_expansions=FALLBACK_GIF_SOFT_MAX_EXPANSIONS,
-    )
-
-
 def run_relaxed_simulation(
     warehouse,
     agent_count: int,
@@ -315,6 +217,7 @@ def run_relaxed_simulation(
     max_order_attempts: int = AUTOMATIC_RELAXED_ORDER_LIMIT,
     time_budget_seconds: float = FALLBACK_GIF_TIME_BUDGET_SECONDS,
     soft_max_expansions: int = FALLBACK_GIF_SOFT_MAX_EXPANSIONS,
+    stats: PlanningStats | None = None,
 ) -> tuple[int, list]:
     plans = build_relaxed_agent_plans(
         warehouse,
@@ -327,6 +230,7 @@ def run_relaxed_simulation(
         max_order_attempts=max_order_attempts,
         time_budget_seconds=time_budget_seconds,
         soft_max_expansions=soft_max_expansions,
+        stats=stats,
     )
     makespan = render_or_measure(
         warehouse,
@@ -339,34 +243,6 @@ def run_relaxed_simulation(
         debug_frames_dir,
     )
     return makespan, plans
-
-
-def diagnostic_collision_count(
-    warehouse,
-    agent_count: int,
-    tasks,
-    mode: str,
-    station_mode: str,
-    strategy: str,
-    algorithm: str,
-) -> int | None:
-    try:
-        relaxed_plans = build_relaxed_agent_plans(
-            warehouse,
-            agent_count,
-            tasks,
-            mode,
-            station_mode,
-            strategy,
-            algorithm,
-            max_order_attempts=DIAGNOSTIC_ORDER_LIMIT,
-            time_budget_seconds=DIAGNOSTIC_TIME_BUDGET_SECONDS,
-            soft_max_expansions=DIAGNOSTIC_SOFT_MAX_EXPANSIONS,
-        )
-    except RuntimeError:
-        return None
-
-    return total_collision_count(relaxed_plans)
 
 
 def resolve_scenario_path(scenario_arg: str) -> Path:
@@ -419,6 +295,7 @@ def variant_filename_token(value: str) -> str:
 
 def variant_label(
     scenario_label: str,
+    layout_size: str | None,
     layout_id: int,
     layout_type: str,
     mode: str,
@@ -426,8 +303,9 @@ def variant_label(
     strategy: str,
     algorithm: str,
 ) -> str:
+    size_prefix = "" if layout_size is None else f"{layout_size}_"
     return (
-        f"{layout_type}_layout{layout_id}_{scenario_label}_"
+        f"{size_prefix}{layout_type}_layout{layout_id}_{scenario_label}_"
         f"{variant_filename_token(mode)}_{variant_filename_token(station_mode)}_"
         f"{variant_filename_token(strategy)}_{variant_filename_token(algorithm)}"
     )
@@ -471,12 +349,13 @@ def resolve_layout_reference(
     layout_arg: str | None,
     scenario_layout_id: int,
     layout_type: str,
+    layout_size: str | None = None,
 ) -> tuple[int, Path, str]:
     normalized_layout_type = normalize_layout_type(layout_type)
     if layout_arg is None:
         return (
             scenario_layout_id,
-            layout_path(scenario_layout_id, normalized_layout_type),
+            layout_path(scenario_layout_id, normalized_layout_type, layout_size=layout_size),
             normalized_layout_type,
         )
 
@@ -485,7 +364,7 @@ def resolve_layout_reference(
         override_layout_id = int(stripped_layout_arg)
         return (
             override_layout_id,
-            layout_path(override_layout_id, normalized_layout_type),
+            layout_path(override_layout_id, normalized_layout_type, layout_size=layout_size),
             normalized_layout_type,
         )
 
@@ -536,8 +415,18 @@ def run_simulation(
     progress: bool,
     render_gif: bool,
     debug_frames_dir: Path | None = None,
+    stats: PlanningStats | None = None,
 ) -> tuple[int, list]:
-    plans = build_agent_plans(warehouse, agent_count, tasks, mode, station_mode, strategy, algorithm)
+    plans = build_agent_plans(
+        warehouse,
+        agent_count,
+        tasks,
+        mode,
+        station_mode,
+        strategy,
+        algorithm,
+        stats=stats,
+    )
     makespan = render_or_measure(
         warehouse,
         plans,
@@ -551,7 +440,7 @@ def run_simulation(
     return makespan, plans
 
 
-def try_run_simulation(
+def execute_variant(
     warehouse,
     agent_count: int,
     tasks,
@@ -565,11 +454,22 @@ def try_run_simulation(
     progress: bool,
     render_gif: bool,
     debug_frames_dir: Path | None = None,
-) -> tuple[str, str | None, int | None, list | None]:
+) -> VariantExecutionResult:
+    stats = PlanningStats()
+    started_at = time.perf_counter()
+
     try:
         ensure_variant_possible(warehouse, agent_count, tasks, mode)
     except ImpossibleVariantError as exc:
-        return STATUS_IMPOSSIBLE, str(exc), None, None
+        return VariantExecutionResult(
+            status=STATUS_IMPOSSIBLE,
+            details=str(exc),
+            makespan=None,
+            plans=None,
+            collisions=None,
+            replans=stats.replans,
+            simulation_time_seconds=time.perf_counter() - started_at,
+        )
 
     try:
         makespan, plans = run_simulation(
@@ -586,8 +486,10 @@ def try_run_simulation(
             progress,
             render_gif,
             debug_frames_dir,
+            stats=stats,
         )
     except RuntimeError as exc:
+        stats.replans += 1
         try:
             relaxed_makespan, relaxed_plans = run_relaxed_simulation(
                 warehouse,
@@ -603,32 +505,108 @@ def try_run_simulation(
                 progress,
                 render_gif,
                 debug_frames_dir,
+                stats=stats,
             )
-        except RuntimeError:
-            return STATUS_NO_SOLUTION, str(exc), None, None
+        except RuntimeError as relaxed_exc:
+            return VariantExecutionResult(
+                status=STATUS_NO_SOLUTION,
+                details=f"{exc} Best-effort simulation failed: {relaxed_exc}",
+                makespan=None,
+                plans=None,
+                collisions=None,
+                replans=stats.replans,
+                simulation_time_seconds=time.perf_counter() - started_at,
+            )
 
-        return (
-            STATUS_NO_SOLUTION,
-            f"{exc} Executed best-effort simulation and counted collisions.",
-            relaxed_makespan,
-            relaxed_plans,
+        return VariantExecutionResult(
+            status=STATUS_NO_SOLUTION,
+            details=str(exc),
+            makespan=relaxed_makespan,
+            plans=relaxed_plans,
+            collisions=total_collision_count(relaxed_plans),
+            replans=stats.replans,
+            simulation_time_seconds=time.perf_counter() - started_at,
         )
 
-    return STATUS_SOLVED, None, makespan, plans
+    return VariantExecutionResult(
+        status=STATUS_SOLVED,
+        details=None,
+        makespan=makespan,
+        plans=plans,
+        collisions=total_collision_count(plans),
+        replans=stats.replans,
+        simulation_time_seconds=time.perf_counter() - started_at,
+    )
 
 
-def default_layout_argument(explicit_flags: set[str]) -> str | None:
-    if "--layout" in explicit_flags:
-        return None
-    if "--scenario" in explicit_flags:
-        return None
-    return DEFAULT_LAYOUT
+def variant_description(
+    scenario_name: str,
+    layout_id: int,
+    layout_size: str | None,
+    layout_type: str,
+    mode: str,
+    station_mode: str,
+    strategy: str,
+    algorithm: str,
+) -> str:
+    strategy_value = strategy_label(strategy) or "-"
+    return (
+        f"scenario={scenario_name} "
+        f"layout={layout_id} "
+        f"size={layout_size_label(layout_size)} "
+        f"type={layout_type} "
+        f"mode={mode_label(mode)} "
+        f"station={mode_label(station_mode)} "
+        f"strategy={strategy_value} "
+        f"algorithm={algorithm_label(algorithm)}"
+    )
 
 
-def default_scenario_argument(explicit_flags: set[str], layout_arg: str | None) -> str:
-    if "--scenario" in explicit_flags:
-        return DEFAULT_SCENARIO
+def variant_result_summary(
+    result: VariantExecutionResult,
+    task_count: int,
+    station_cells: set[tuple[int, int]],
+    output_path: Path | None,
+    debug_frames_dir: Path | None,
+) -> str:
+    parts = [
+        f"status={status_label(result.status)}",
+        f"simulation time={format_duration(result.simulation_time_seconds)}",
+        f"replans={result.replans}",
+    ]
 
+    throughput_value = throughput(task_count, result.makespan)
+    if throughput_value is not None:
+        parts.append(f"throughput={throughput_value}")
+    if result.makespan is not None:
+        parts.append(f"makespan={result.makespan}")
+    if result.collisions is not None:
+        parts.append(f"collisions={result.collisions}")
+
+    missed = missed_deadline_count(result.plans)
+    waits = wait_step_count(result.plans, station_cells)
+    distance = distance_step_sum(result.plans)
+    if missed is not None:
+        parts.append(f"missed deadlines={missed}")
+    if waits is not None:
+        parts.append(f"waits={waits}")
+    if distance is not None:
+        parts.append(f"sum of distances={distance}")
+    if result.plans is not None and output_path is not None:
+        parts.append(f"gif={output_path}")
+    if result.plans is not None and debug_frames_dir is not None:
+        parts.append(f"frames={debug_frames_dir}")
+    if result.plans is None and result.details is not None:
+        parts.append(f"details={result.details}")
+
+    return ", ".join(parts)
+
+
+def default_layout_argument() -> str | None:
+    return None
+
+
+def default_scenario_argument() -> str:
     return DEFAULT_SCENARIO
 
 
@@ -649,22 +627,30 @@ def run_suite(args: argparse.Namespace) -> None:
     if missing:
         raise FileNotFoundError("Missing scenario files: " + ", ".join(missing))
 
-    tasks_rows = [TASKS_HEADERS]
-    summary_rows = [SUMMARY_HEADERS]
     comparison_rows = [COMPARISON_HEADERS]
     output_dir = Path(args.suite_output_dir)
-    warehouse_cache: dict[tuple[int, str], tuple[int, Path, str, object]] = {}
+    warehouse_cache: dict[tuple[str | None, int, str], tuple[int, Path, str, object]] = {}
+    suite_entries = []
+    total_variants = 0
 
     for scenario_path in scenario_paths:
-        print(f"[2/4] Loading scenario from {scenario_path}")
         definition = load_scenario_definition(scenario_path)
-        for variant in expand_scenario_variants(definition):
-            cache_key = (variant.layout_id, variant.layout_type)
+        variants = expand_scenario_variants(definition)
+        suite_entries.append((scenario_path, definition, variants))
+        total_variants += len(variants)
+
+    variant_index = 0
+    for scenario_path, definition, variants in suite_entries:
+        for variant in variants:
+            variant_index += 1
+            prefix = f"[{variant_index}/{total_variants}]"
+            cache_key = (definition.layout_size, variant.layout_id, variant.layout_type)
             if cache_key not in warehouse_cache:
                 resolved_layout_id, resolved_layout_path, resolved_layout_type = resolve_layout_reference(
                     None,
                     variant.layout_id,
                     variant.layout_type,
+                    definition.layout_size,
                 )
                 warehouse = load_layout(resolved_layout_path, resolved_layout_type)
                 warehouse_cache[cache_key] = (
@@ -673,14 +659,11 @@ def run_suite(args: argparse.Namespace) -> None:
                     resolved_layout_type,
                     warehouse,
                 )
-                print(
-                    f"[2/4] Layout loaded from {resolved_layout_path}: "
-                    f"{warehouse.width}x{warehouse.height} ({resolved_layout_type}/{resolved_layout_id})"
-                )
 
             resolved_layout_id, _, _, warehouse = warehouse_cache[cache_key]
             current_label = variant_label(
                 scenario_path.stem,
+                definition.layout_size,
                 resolved_layout_id,
                 variant.layout_type,
                 variant.mode,
@@ -690,11 +673,20 @@ def run_suite(args: argparse.Namespace) -> None:
             )
             output_path = output_dir / f"{current_label}.gif" if args.gif else None
             print(
-                f"[2/4] Scenario variant: {definition.agent_count} agents, {len(definition.tasks)} tasks, "
-                f"mode={variant.mode}, station={variant.station_mode}, strategy={variant.strategy}, "
-                f"algorithm={variant.algorithm}, layout={variant.layout_type}/{resolved_layout_id}"
+                f"{prefix} "
+                + variant_description(
+                    scenario_path.stem,
+                    resolved_layout_id,
+                    definition.layout_size,
+                    variant.layout_type,
+                    variant.mode,
+                    variant.station_mode,
+                    variant.strategy,
+                    variant.algorithm,
+                )
             )
-            status, details, makespan, plans = try_run_simulation(
+
+            result = execute_variant(
                 warehouse,
                 definition.agent_count,
                 definition.tasks,
@@ -705,83 +697,47 @@ def run_suite(args: argparse.Namespace) -> None:
                 output_path,
                 args.cell_size,
                 args.frame_duration,
-                progress=True,
+                progress=False,
                 render_gif=args.gif,
             )
-            assignment_type = assignment_type_label(variant.mode, variant.station_mode)
-            collisions = None
-            if status == STATUS_NO_SOLUTION and plans is None:
-                collisions = diagnostic_collision_count(
-                    warehouse,
+
+            print(
+                "  "
+                + variant_result_summary(
+                    result,
+                    len(definition.tasks),
+                    set(warehouse.stations),
+                    output_path,
+                    None,
+                )
+            )
+
+            comparison_rows.append(
+                build_comparison_row(
+                    scenario_path.stem,
+                    resolved_layout_id,
+                    definition.layout_size,
+                    variant.layout_type,
                     definition.agent_count,
-                    definition.tasks,
+                    len(definition.tasks),
                     variant.mode,
                     variant.station_mode,
                     variant.strategy,
                     variant.algorithm,
-                )
-            comparison_rows.append(
-                build_comparison_row(
-                    suite_name,
-                    variant.layout_type,
-                    resolved_layout_id,
-                    variant.strategy,
-                    variant.algorithm,
-                    assignment_type,
-                    makespan,
-                    plans,
-                    status=status,
-                    details=details,
-                    collisions=collisions,
-                    total_tasks=len(definition.tasks),
+                    result,
+                    set(warehouse.stations),
                 )
             )
 
-            if status != STATUS_SOLVED:
-                print(f"[warn] Variant status: {status}")
-                print(f"[warn] Details: {details}")
-                continue
-
-            tasks_rows.extend(
-                build_tasks_rows(
-                    suite_name,
-                    variant.layout_type,
-                    resolved_layout_id,
-                    variant.strategy,
-                    variant.algorithm,
-                    assignment_type,
-                    makespan,
-                    plans,
-                )[1:]
-            )
-            summary_rows.extend(
-                build_summary_rows(
-                    suite_name,
-                    variant.layout_type,
-                    resolved_layout_id,
-                    variant.strategy,
-                    variant.algorithm,
-                    assignment_type,
-                    plans,
-                )[1:]
-            )
-
-    results_path = Path(args.results_dir) / f"{suite_name}_results.xlsx"
-    write_xlsx_workbook(
-        results_path,
-        [
-            ("Tasks", tasks_rows),
-            ("Agent Summary", summary_rows),
-            ("Overall Comparison", comparison_rows),
-        ],
-    )
-    print(f"[done] Wrote suite results: {results_path}")
+    results_path = Path(args.results_dir) / f"{suite_name}.xlsx"
+    write_xlsx_workbook(results_path, [("Overall Comparison", comparison_rows)])
+    print(f"[done] Saved results: {results_path}")
 
 
 def run_single_scenario(args: argparse.Namespace) -> None:
     explicit_flags = args.explicit_flags
-    layout_arg = args.layout if "--layout" in explicit_flags else default_layout_argument(explicit_flags)
-    scenario_arg = args.scenario or default_scenario_argument(explicit_flags, layout_arg)
+    layout_arg = args.layout if "--layout" in explicit_flags else default_layout_argument()
+    scenario_arg = args.scenario or default_scenario_argument()
     layout_type = args.layout_type or DEFAULT_LAYOUT_TYPE
     mode = args.mode or DEFAULT_MODE
     station_mode = args.station or DEFAULT_STATION
@@ -791,7 +747,6 @@ def run_single_scenario(args: argparse.Namespace) -> None:
     debugging = args.debugging if "--debugging" in explicit_flags else DEFAULT_DEBUGGING
 
     scenario_path = resolve_scenario_path(scenario_arg)
-    print(f"[1/4] Loading scenario from {scenario_path}")
     definition = load_scenario_definition(scenario_path)
     variant = resolve_scenario_variant(
         definition,
@@ -802,105 +757,61 @@ def run_single_scenario(args: argparse.Namespace) -> None:
         strategy=strategy,
         algorithm=algorithm,
     )
-    print(
-        f"[1/4] Scenario loaded: {definition.agent_count} agents, {len(definition.tasks)} tasks, "
-        f"mode={variant.mode}, station={variant.station_mode}, strategy={variant.strategy}, "
-        f"algorithm={variant.algorithm}, type={variant.layout_type}"
-    )
 
     resolved_layout_id, resolved_layout_path, resolved_layout_type = resolve_layout_reference(
         layout_arg,
         variant.layout_id,
         variant.layout_type,
+        definition.layout_size,
     )
-    print(f"[2/4] Loading layout from {resolved_layout_path}")
     warehouse = load_layout(resolved_layout_path, resolved_layout_type)
-    print(
-        f"[2/4] Layout loaded: {warehouse.width}x{warehouse.height} "
-        f"(layout={resolved_layout_type}/{resolved_layout_id})"
-    )
 
     output_path = build_single_gif_output_path(args.output) if render_gif else None
     debug_frames_dir = build_debug_frames_dir(scenario_path) if debugging else None
+    prefix = "[1/1]"
 
-    print("[3/4] Planning collision-free routes")
-    try:
-        ensure_variant_possible(warehouse, definition.agent_count, definition.tasks, variant.mode)
-    except ImpossibleVariantError as exc:
-        print(f"[3/4] Planning finished with status: {STATUS_IMPOSSIBLE}")
-        print_variant_status(STATUS_IMPOSSIBLE, str(exc))
-        raise SystemExit(1)
-
-    try:
-        plans = build_agent_plans(
-            warehouse,
-            definition.agent_count,
-            definition.tasks,
+    print(
+        f"{prefix} "
+        + variant_description(
+            scenario_path.stem,
+            resolved_layout_id,
+            definition.layout_size,
+            variant.layout_type,
             variant.mode,
             variant.station_mode,
             variant.strategy,
             variant.algorithm,
         )
-    except RuntimeError as exc:
-        print(f"[3/4] Planning finished with status: {STATUS_NO_SOLUTION}")
-        if render_gif and debug_frames_dir is not None:
-            print(f"[4/4] Running best-effort simulation, rendering GIF to {output_path} and exporting frames to {debug_frames_dir}")
-        elif render_gif:
-            print(f"[4/4] Running best-effort simulation, rendering GIF to {output_path}")
-        elif debug_frames_dir is not None:
-            print(f"[4/4] Running best-effort simulation and exporting frames to {debug_frames_dir}")
-        else:
-            print("[4/4] Running best-effort simulation and counting collisions")
+    )
 
-        try:
-            makespan, relaxed_plans = run_relaxed_simulation(
-                warehouse,
-                definition.agent_count,
-                definition.tasks,
-                variant.mode,
-                variant.station_mode,
-                variant.strategy,
-                variant.algorithm,
-                output_path,
-                args.cell_size,
-                args.frame_duration,
-                progress=True,
-                render_gif=render_gif,
-                debug_frames_dir=debug_frames_dir,
-            )
-        except RuntimeError as relaxed_exc:
-            print_variant_status(STATUS_NO_SOLUTION, f"{exc} Best-effort simulation failed: {relaxed_exc}")
-            raise SystemExit(1)
-
-        print_variant_status(
-            STATUS_NO_SOLUTION,
-            f"{exc} Executed best-effort simulation and counted collisions.",
-        )
-        print_summary(relaxed_plans, makespan, output_path, variant.station_mode, render_gif, debug_frames_dir)
-        return
-
-    print("[3/4] Route planning finished")
-
-    if render_gif and debug_frames_dir is not None:
-        print(f"[4/4] Rendering GIF to {output_path} and exporting frames to {debug_frames_dir}")
-    elif render_gif:
-        print(f"[4/4] Rendering GIF to {output_path}")
-    elif debug_frames_dir is not None:
-        print(f"[4/4] Exporting frames to {debug_frames_dir}")
-    else:
-        print("[4/4] Skipping GIF rendering")
-
-    makespan = render_or_measure(
+    result = execute_variant(
         warehouse,
-        plans,
+        definition.agent_count,
+        definition.tasks,
+        variant.mode,
+        variant.station_mode,
+        variant.strategy,
+        variant.algorithm,
         output_path,
         args.cell_size,
         args.frame_duration,
-        progress=True,
+        progress=False,
         render_gif=render_gif,
         debug_frames_dir=debug_frames_dir,
     )
-    print_summary(plans, makespan, output_path, variant.station_mode, render_gif, debug_frames_dir)
+    print(
+        "  "
+        + variant_result_summary(
+            result,
+            len(definition.tasks),
+            set(warehouse.stations),
+            output_path,
+            debug_frames_dir,
+        )
+    )
+
+    if result.plans is None:
+        raise SystemExit(1)
 
 
 def main() -> None:

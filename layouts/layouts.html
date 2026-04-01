@@ -233,6 +233,10 @@
     <div class="shell">
       <div class="controls">
         <div class="field">
+          <label for="size-select">Rozmiar</label>
+          <select id="size-select"></select>
+        </div>
+        <div class="field">
           <label for="layout-select">Layout</label>
           <select id="layout-select"></select>
         </div>
@@ -256,32 +260,19 @@
     </div>
 
     <script>
-      const AVAILABLE_LAYOUTS = [
-        "0",
-        "1",
-        "2",
-        "3",
-        "4",
-        "5",
-        "6",
-        "7",
-        "8",
-        "9",
-        "10",
-        "11",
-        "12",
-        "13",
-        "14",
-        "15",
-        "16",
-        "17",
-        "18",
-        "19",
-        "20",
-        "21",
-        "22",
-        "23",
+      const AVAILABLE_SIZES = [
+        { value: "small", label: "Small" },
+        { value: "medium", label: "Medium" },
+        { value: "large", label: "Large" },
       ];
+      const AVAILABLE_LAYOUTS_BY_SIZE = {
+        small: ["0", "1", "2", "3", "4", "5", "6", "7"],
+        medium: ["0", "1", "2", "3", "4", "5", "6", "7"],
+        large: ["0", "1", "2", "3", "4", "5", "6", "7"],
+      };
+      const SUPPORTED_SIZES = new Set(
+        AVAILABLE_SIZES.map((item) => item.value),
+      );
       const AVAILABLE_TYPES = [
         { value: "square", label: "Kwadratowe" },
         { value: "hexagon", label: "Szesciokatne" },
@@ -292,6 +283,7 @@
       );
       const layoutCache = new Map();
 
+      const sizeSelect = document.getElementById("size-select");
       const layoutSelect = document.getElementById("layout-select");
       const typeSelect = document.getElementById("type-select");
       const metaElement = document.getElementById("meta");
@@ -303,16 +295,17 @@
       initializeControls();
       renderSelectedLayout();
 
+      sizeSelect.addEventListener("change", handleSizeChange);
       layoutSelect.addEventListener("change", renderSelectedLayout);
       typeSelect.addEventListener("change", renderSelectedLayout);
       window.addEventListener("resize", fitBoardToViewport);
 
       function initializeControls() {
-        for (const layoutId of AVAILABLE_LAYOUTS) {
+        for (const sizeOption of AVAILABLE_SIZES) {
           const option = document.createElement("option");
-          option.value = layoutId;
-          option.textContent = "Layout " + layoutId;
-          layoutSelect.appendChild(option);
+          option.value = sizeOption.value;
+          option.textContent = sizeOption.label;
+          sizeSelect.appendChild(option);
         }
 
         for (const typeOption of AVAILABLE_TYPES) {
@@ -323,31 +316,72 @@
         }
 
         const searchParams = new URLSearchParams(window.location.search);
+        const requestedSize = searchParams.get("size");
         const requestedLayout = searchParams.get("layout");
         const requestedType = searchParams.get("type");
 
-        layoutSelect.value = AVAILABLE_LAYOUTS.includes(requestedLayout)
-          ? requestedLayout
-          : AVAILABLE_LAYOUTS[0];
+        sizeSelect.value = SUPPORTED_SIZES.has(requestedSize)
+          ? requestedSize
+          : AVAILABLE_SIZES[0].value;
+        syncLayoutOptions(requestedLayout);
         typeSelect.value = SUPPORTED_TYPES.has(requestedType)
           ? requestedType
           : AVAILABLE_TYPES[0].value;
       }
 
+      function handleSizeChange() {
+        syncLayoutOptions(layoutSelect.value);
+        renderSelectedLayout();
+      }
+
+      function getAvailableLayoutsForSelectedSize() {
+        return AVAILABLE_LAYOUTS_BY_SIZE[sizeSelect.value] || [];
+      }
+
+      function syncLayoutOptions(preferredLayoutId) {
+        const availableLayouts = getAvailableLayoutsForSelectedSize();
+        layoutSelect.innerHTML = "";
+
+        for (const layoutId of availableLayouts) {
+          const option = document.createElement("option");
+          option.value = layoutId;
+          option.textContent = "Layout " + layoutId;
+          layoutSelect.appendChild(option);
+        }
+
+        layoutSelect.value = availableLayouts.includes(preferredLayoutId)
+          ? preferredLayoutId
+          : availableLayouts[0] || "";
+      }
+
+      function formatSizeLabel(layoutSize) {
+        return layoutSize.charAt(0).toUpperCase() + layoutSize.slice(1);
+      }
+
       async function renderSelectedLayout() {
+        const layoutSize = sizeSelect.value;
         const layoutId = layoutSelect.value;
         const layoutType = typeSelect.value;
 
-        updateUrl(layoutId, layoutType);
-
         try {
-          const rawLayout = await loadLayoutJson(layoutId);
+          if (!layoutId) {
+            throw new Error("Brak dostepnych layoutow dla wybranego rozmiaru.");
+          }
+
+          updateUrl(layoutSize, layoutId, layoutType);
+          const rawLayout = await loadLayoutJson(layoutSize, layoutId);
           const layout = buildLayout(rawLayout, layoutType);
           validateLayout(layout);
-          renderMeta(layoutId, layout);
+          renderMeta(layoutSize, layoutId, layout);
           renderBoard(layout);
           fitBoardToViewport();
-          document.title = "Layout " + layoutId + " - " + layoutType;
+          document.title =
+            "Layout " +
+            layoutId +
+            " - " +
+            formatSizeLabel(layoutSize) +
+            " - " +
+            layoutType;
         } catch (error) {
           boardElement.innerHTML = "";
           boardElement.className = "board";
@@ -362,8 +396,9 @@
         }
       }
 
-      function updateUrl(layoutId, layoutType) {
+      function updateUrl(layoutSize, layoutId, layoutType) {
         const searchParams = new URLSearchParams(window.location.search);
+        searchParams.set("size", layoutSize);
         searchParams.set("layout", layoutId);
         searchParams.set("type", layoutType);
         const nextUrl =
@@ -371,20 +406,22 @@
         window.history.replaceState({}, "", nextUrl);
       }
 
-      async function loadLayoutJson(layoutId) {
-        if (layoutCache.has(layoutId)) {
-          return layoutCache.get(layoutId);
+      async function loadLayoutJson(layoutSize, layoutId) {
+        const cacheKey = layoutSize + ":" + layoutId;
+        if (layoutCache.has(cacheKey)) {
+          return layoutCache.get(cacheKey);
         }
 
-        const response = await fetch(layoutId + ".json", { cache: "no-store" });
+        const relativePath = layoutSize + "/" + layoutId + ".json";
+        const response = await fetch(relativePath, { cache: "no-store" });
         if (!response.ok) {
           throw new Error(
-            "Nie udalo sie wczytac pliku layouts/" + layoutId + ".json",
+            "Nie udalo sie wczytac pliku layouts/" + relativePath,
           );
         }
 
         const rawLayout = await response.json();
-        layoutCache.set(layoutId, rawLayout);
+        layoutCache.set(cacheKey, rawLayout);
         return rawLayout;
       }
 
@@ -492,12 +529,14 @@
         }, 0);
       }
 
-      function renderMeta(layoutId, layout) {
+      function renderMeta(layoutSize, layoutId, layout) {
         const stationCells = areaCellCount(layout.stations);
         const shelfCells = areaCellCount(layout.shelves);
         metaElement.textContent =
           "Layout: " +
           layoutId +
+          " | Rozmiar: " +
+          formatSizeLabel(layoutSize) +
           " | Szerokosc: " +
           layout.width +
           " | Wysokosc: " +

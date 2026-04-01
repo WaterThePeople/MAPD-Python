@@ -119,16 +119,6 @@ def draw_agent(
         draw_centered_text(draw, (left, top, right, bottom), label, (255, 255, 255), font)
 
 
-def progress_points(total_frames: int) -> set[int]:
-    if total_frames <= 1:
-        return {0}
-
-    points = {0, total_frames - 1}
-    for percent in range(10, 100, 10):
-        points.add(round((total_frames - 1) * percent / 100))
-    return points
-
-
 def clear_debug_frames(debug_frames_dir: Path) -> None:
     debug_frames_dir.mkdir(parents=True, exist_ok=True)
     for existing_frame in debug_frames_dir.glob("frame_*.png"):
@@ -451,12 +441,10 @@ def render_frames(
     if output_path is None and debug_frames_dir is None:
         raise ValueError("render_frames requires an output GIF path or a debug frames directory.")
 
-    requested_cell_size = cell_size
     cell_size = fitted_cell_size(warehouse, cell_size)
     font = ImageFont.load_default()
     max_time = max(len(plan.path) for plan in plans) - 1 if plans else 0
     total_frames = max_time + 1
-    progress_marks = progress_points(total_frames)
     package_pickups, package_release_times, package_deadlines, tasks_by_coord = build_task_maps(warehouse, plans)
     frame_number_width = max(4, len(str(total_frames - 1)))
     cumulative_collisions = 0
@@ -472,14 +460,7 @@ def render_frames(
     header_bg = (245, 245, 245)
     header_border = (200, 200, 200)
 
-    if progress and cell_size != requested_cell_size:
-        print(f"  [render] auto-scaled cells from {requested_cell_size}px to {cell_size}px to fit the frame")
-
     for time in range(total_frames):
-        if progress and time in progress_marks:
-            percent = int(round((time / max(total_frames - 1, 1)) * 100))
-            print(f"  [render] frame {time + 1}/{total_frames} ({percent}%)")
-
         image = Image.new("RGB", (board_width, total_height), (255, 255, 255))
         draw = ImageDraw.Draw(image)
         agent_positions = frame_agent_positions(plans, time)
@@ -557,11 +538,5 @@ def render_frames(
             loop=0,
             optimize=False,
         )
-
-    if progress:
-        if output_path is not None:
-            print(f"  [render] saved {total_frames} GIF frames")
-        if debug_frames_dir is not None:
-            print(f"  [render] exported {total_frames} debug frames to {debug_frames_dir}")
 
     return max_time

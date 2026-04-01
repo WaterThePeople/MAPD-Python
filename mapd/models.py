@@ -26,10 +26,16 @@ class AgentPlan:
     missed_deadlines: list[int]
 
 
+@dataclass
+class PlanningStats:
+    replans: int = 0
+
+
 @dataclass(frozen=True)
 class ScenarioDefinition:
     agent_count: int
     tasks: list[Task]
+    layout_size: str | None
     layout_ids: list[int]
     layout_types: list[str]
     modes: list[str]
@@ -46,3 +52,14 @@ class ScenarioVariant:
     station_mode: str
     strategy: str
     algorithm: str
+
+
+@dataclass
+class VariantExecutionResult:
+    status: str
+    details: str | None
+    makespan: int | None
+    plans: list[AgentPlan] | None
+    collisions: int | None
+    replans: int
+    simulation_time_seconds: float

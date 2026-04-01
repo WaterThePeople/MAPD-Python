@@ -6,7 +6,7 @@ from collections import defaultdict
 from mapd.algorithms import get_algorithm, normalize_algorithm_name
 from mapd.algorithms.base import SearchProblem, reconstruct_path
 from mapd.collisions import total_collision_count
-from mapd.models import AgentPlan, Coord, Task
+from mapd.models import AgentPlan, Coord, PlanningStats, Task
 from mapd.strategy import get_strategy
 from mapd.warehouse import WarehouseMap
 
@@ -904,6 +904,7 @@ def relocate_finished_agent(
     protected_path: list[Coord],
     station_release_time: int,
     algorithm: str,
+    stats: PlanningStats | None = None,
 ) -> bool:
     blocker_plan = plans_by_id[blocker_id]
     if not blocker_plan.path:
@@ -956,6 +957,8 @@ def relocate_finished_agent(
     except RuntimeError:
         return False
     blocker_plan.path = merge_segments(updated_path, back_to_station)
+    if stats is not None:
+        stats.replans += 1
     return True
 
 
@@ -972,6 +975,7 @@ def build_agent_plans_once(
     allow_soft_collisions: bool = False,
     soft_max_expansions: int | None = None,
     deadline: float | None = None,
+    stats: PlanningStats | None = None,
 ) -> list[AgentPlan]:
     plans_by_id: dict[int, AgentPlan] = {}
 
@@ -1034,6 +1038,7 @@ def build_agent_plans_once(
                     protected_path=plan.path,
                     station_release_time=last_use_time,
                     algorithm=algorithm,
+                    stats=stats,
                 )
                 if not moved:
                     failed_blocker = blocker_id
@@ -1046,6 +1051,8 @@ def build_agent_plans_once(
             blocker_coord = blocker_plan.path[-1]
             if blocker_coord in blocked_cells:
                 raise RuntimeError("Could not resolve a repeated station-lane conflict during replanning.")
+            if stats is not None:
+                stats.replans += 1
             blocked_cells.add(blocker_coord)
 
         plans_by_id[agent_id] = plan
@@ -1061,6 +1068,8 @@ def build_agent_plans(
     station_mode: str,
     strategy: str,
     algorithm: str,
+    *,
+    stats: PlanningStats | None = None,
 ) -> list[AgentPlan]:
     _, tasks_by_agent, homes, station_cells, colors = prepare_planning_inputs(
         warehouse,
@@ -1074,7 +1083,9 @@ def build_agent_plans(
     planning_orders = build_planning_orders(warehouse, tasks_by_agent, homes, station_mode, algorithm)
 
     last_error: RuntimeError | None = None
-    for planning_order in planning_orders:
+    for attempt_index, planning_order in enumerate(planning_orders):
+        if attempt_index > 0 and stats is not None:
+            stats.replans += 1
         try:
             return build_agent_plans_once(
                 warehouse,
@@ -1086,6 +1097,7 @@ def build_agent_plans(
                 station_mode,
                 algorithm,
                 allow_soft_collisions=False,
+                stats=stats,
             )
         except RuntimeError as exc:
             last_error = exc
@@ -1108,6 +1120,7 @@ def build_relaxed_agent_plans(
     max_order_attempts: int | None = None,
     time_budget_seconds: float | None = None,
     soft_max_expansions: int | None = None,
+    stats: PlanningStats | None = None,
 ) -> list[AgentPlan]:
     _, tasks_by_agent, homes, station_cells, colors = prepare_planning_inputs(
         warehouse,
@@ -1129,7 +1142,9 @@ def build_relaxed_agent_plans(
     best_score: tuple[int, int, int] | None = None
     last_error: RuntimeError | None = None
 
-    for planning_order in planning_orders:
+    for attempt_index, planning_order in enumerate(planning_orders):
+        if attempt_index > 0 and stats is not None:
+            stats.replans += 1
         if deadline is not None and time.perf_counter() >= deadline:
             last_error = RuntimeError("Fallback planning exceeded the time budget.")
             break
@@ -1146,6 +1161,7 @@ def build_relaxed_agent_plans(
                 allow_soft_collisions=True,
                 soft_max_expansions=soft_max_expansions,
                 deadline=deadline,
+                stats=stats,
             )
         except RuntimeError as exc:
             last_error = exc

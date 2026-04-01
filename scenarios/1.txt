@@ -1,5 +1,6 @@
 Agents: 20
 Tasks: 50
+Size: Medium
 Layout: [0]
 Mode: [Set,Available]
 Station: [Set,Available]

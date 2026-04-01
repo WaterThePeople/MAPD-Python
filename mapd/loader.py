@@ -6,12 +6,26 @@ from mapd.algorithms import normalize_algorithm_name
 from mapd.models import ScenarioDefinition, ScenarioVariant, Task
 from mapd.warehouse import WarehouseMap
 
+SUPPORTED_LAYOUT_SIZES = {"small", "medium", "large"}
+
 
 def normalize_layout_type(value: str | None) -> str:
     normalized = "square" if value is None else value.strip().lower()
     if normalized not in WarehouseMap.SUPPORTED_LAYOUT_TYPES:
         raise ValueError(
             f"Unsupported layout type: {value}. Expected one of {sorted(WarehouseMap.SUPPORTED_LAYOUT_TYPES)}."
+        )
+    return normalized
+
+
+def normalize_layout_size(value: str | None) -> str:
+    if value is None:
+        raise ValueError("Layout size cannot be empty.")
+
+    normalized = value.strip().lower()
+    if normalized not in SUPPORTED_LAYOUT_SIZES:
+        raise ValueError(
+            f"Unsupported layout size: {value}. Expected one of {sorted(SUPPORTED_LAYOUT_SIZES)}."
         )
     return normalized
 
@@ -37,28 +51,56 @@ def load_layout(path: Path, layout_type: str = "square") -> WarehouseMap:
     return WarehouseMap(rows, layout_type=resolved_layout_type)
 
 
-def layout_path(layout_id: int, layout_type: str | None = None, layouts_root: Path | None = None) -> Path:
-    normalized_layout_type = normalize_layout_type(layout_type) if layout_type is not None else None
-    root = Path("layouts") if layouts_root is None else layouts_root
+def _find_layout_in_directory(root: Path, layout_id: int) -> Path | None:
+    if not root.is_dir():
+        return None
+
     for suffix in (".json", ".txt"):
         candidate = root / f"{layout_id}{suffix}"
         if candidate.exists():
             return candidate
 
-    legacy_layout_dir = root / str(layout_id)
+    nested_layout_dir = root / str(layout_id)
     for suffix in (".json", ".txt"):
-        candidate = legacy_layout_dir / f"{layout_id}{suffix}"
+        candidate = nested_layout_dir / f"{layout_id}{suffix}"
         if candidate.exists():
             return candidate
 
-    if legacy_layout_dir.is_dir():
-        layout_files = sorted(legacy_layout_dir.glob("*.json"))
+    if nested_layout_dir.is_dir():
+        layout_files = sorted(nested_layout_dir.glob("*.json"))
         if len(layout_files) == 1:
             return layout_files[0]
 
-        text_files = sorted(legacy_layout_dir.glob("*.txt"))
+        text_files = sorted(nested_layout_dir.glob("*.txt"))
         if len(text_files) == 1:
             return text_files[0]
+
+    return None
+
+
+def layout_path(
+    layout_id: int,
+    layout_type: str | None = None,
+    layout_size: str | None = None,
+    layouts_root: Path | None = None,
+) -> Path:
+    normalized_layout_type = normalize_layout_type(layout_type) if layout_type is not None else None
+    normalized_layout_size = normalize_layout_size(layout_size) if layout_size is not None else None
+    root = Path("layouts") if layouts_root is None else layouts_root
+
+    if normalized_layout_size is not None:
+        sized_match = _find_layout_in_directory(root / normalized_layout_size, layout_id)
+        if sized_match is not None:
+            return sized_match
+
+    for suffix in (".json", ".txt"):
+        candidate = root / f"{layout_id}{suffix}"
+        if candidate.exists():
+            return candidate
+
+    legacy_layout_match = _find_layout_in_directory(root, layout_id)
+    if legacy_layout_match is not None:
+        return legacy_layout_match
 
     if normalized_layout_type is not None:
         typed_layout_dir = root / normalized_layout_type / str(layout_id)
@@ -75,6 +117,21 @@ def layout_path(layout_id: int, layout_type: str | None = None, layouts_root: Pa
             text_files = sorted(typed_layout_dir.glob("*.txt"))
             if len(text_files) == 1:
                 return text_files[0]
+
+    if normalized_layout_size is None:
+        size_matches = []
+        for supported_size in sorted(SUPPORTED_LAYOUT_SIZES):
+            sized_match = _find_layout_in_directory(root / supported_size, layout_id)
+            if sized_match is not None:
+                size_matches.append(sized_match)
+
+        if len(size_matches) == 1:
+            return size_matches[0]
+        if len(size_matches) > 1:
+            raise FileNotFoundError(
+                f"Layout {layout_id} exists in multiple size directories under {root}. "
+                "Specify the scenario Size field or pass an explicit layout path."
+            )
 
     raise FileNotFoundError(f"Layout {layout_id} not found under {root}.")
 
@@ -232,10 +289,18 @@ def _parse_layout_ids(raw_value: str) -> list[int]:
     return layout_ids
 
 
+def _parse_layout_size(raw_value: str) -> str:
+    size_items = _parse_choice_items(raw_value)
+    if len(size_items) != 1:
+        raise ValueError("Scenario must define exactly one layout size.")
+    return normalize_layout_size(size_items[0])
+
+
 def load_scenario_definition(path: Path) -> ScenarioDefinition:
     text = path.read_text(encoding="utf-8")
     agents_match = re.search(r"Agents:\s*(\d+)", text)
     tasks_match = re.search(r"Tasks:\s*(\d+)", text)
+    size_match = re.search(r"Size:\s*([^\r\n]+)", text)
     mode_match = re.search(r"Mode:\s*([^\r\n]+)", text)
     station_match = re.search(r"Station:\s*([^\r\n]+)", text)
     strategy_match = re.search(r"Strategy:\s*([^\r\n]+)", text)
@@ -261,6 +326,7 @@ def load_scenario_definition(path: Path) -> ScenarioDefinition:
         layout_types = _parse_choices(type_match.group(1), normalize_layout_type)
     else:
         layout_types = ["square"]
+    layout_size = _parse_layout_size(size_match.group(1)) if size_match is not None else None
 
     if layout_match is not None:
         layout_ids = _parse_layout_ids(layout_match.group(1))
@@ -300,6 +366,7 @@ def load_scenario_definition(path: Path) -> ScenarioDefinition:
     return ScenarioDefinition(
         agent_count=agent_count,
         tasks=tasks,
+        layout_size=layout_size,
         layout_ids=layout_ids,
         layout_types=layout_types,
         modes=modes,

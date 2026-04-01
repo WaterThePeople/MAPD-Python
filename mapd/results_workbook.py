@@ -5,164 +5,76 @@ from pathlib import Path
 from xml.sax.saxutils import escape
 from zipfile import ZIP_DEFLATED, ZipFile
 
-from mapd.collisions import total_collision_count
-from mapd.models import AgentPlan
-
-
-TASKS_HEADERS = [
-    "scenario",
-    "layout_type",
-    "layout",
-    "strategy",
-    "algorithm",
-    "assignment_type",
-    "agent_id",
-    "start_station",
-    "task_id",
-    "shelf",
-    "release_t",
-    "deadline",
-    "lateness",
-    "path_length",
-    "makespan",
-]
-
-SUMMARY_HEADERS = [
-    "scenario",
-    "layout_type",
-    "layout",
-    "strategy",
-    "algorithm",
-    "assignment_type",
-    "agent_id",
-    "start_station",
-    "path_length",
-    "num_tasks",
-]
+from mapd.report_metrics import (
+    algorithm_label,
+    distance_step_sum,
+    layout_size_label,
+    missed_deadline_count,
+    mode_label,
+    status_label,
+    strategy_label,
+    throughput,
+    wait_step_count,
+)
+from mapd.models import Coord, VariantExecutionResult
 
 COMPARISON_HEADERS = [
     "scenario",
-    "layout_type",
     "layout",
+    "size",
+    "type",
+    "agents",
+    "tasks",
+    "mode",
+    "station",
     "strategy",
     "algorithm",
-    "assignment_type",
     "status",
-    "details",
+    "throughput",
     "makespan",
-    "missed_deadlines",
+    "missed deadlines",
     "collisions",
-    "total_tasks",
+    "number of waits",
+    "replans",
+    "sum of distances",
+    "simulation time",
 ]
-
-
-def assignment_type_label(mode: str, station_mode: str) -> str:
-    return f"{mode}/{station_mode}"
-
-
-def build_tasks_rows(
-    scenario_name: str,
-    layout_type: str,
-    layout_id: int,
-    strategy: str,
-    algorithm: str,
-    assignment_type: str,
-    makespan: int,
-    plans: list[AgentPlan],
-) -> list[list[object]]:
-    rows: list[list[object]] = [TASKS_HEADERS]
-    for plan in plans:
-        path_length = len(plan.path) - 1
-        for task in plan.tasks:
-            completion = plan.completion_times.get(task.task_id)
-            lateness = 0
-            if task.deadline is not None and completion is not None:
-                lateness = max(0, completion - task.deadline)
-
-            rows.append(
-                [
-                    scenario_name,
-                    layout_type,
-                    layout_id,
-                    strategy,
-                    algorithm,
-                    assignment_type,
-                    plan.agent_id,
-                    plan.home_index,
-                    task.task_id,
-                    task.shelf_index,
-                    task.release_time,
-                    task.deadline,
-                    lateness,
-                    path_length,
-                    makespan,
-                ]
-            )
-    return rows
-
-
-def build_summary_rows(
-    scenario_name: str,
-    layout_type: str,
-    layout_id: int,
-    strategy: str,
-    algorithm: str,
-    assignment_type: str,
-    plans: list[AgentPlan],
-) -> list[list[object]]:
-    rows: list[list[object]] = [SUMMARY_HEADERS]
-    for plan in plans:
-        rows.append(
-            [
-                scenario_name,
-                layout_type,
-                layout_id,
-                strategy,
-                algorithm,
-                assignment_type,
-                plan.agent_id,
-                plan.home_index,
-                len(plan.path) - 1,
-                len(plan.tasks),
-            ]
-        )
-    return rows
-
 
 def build_comparison_row(
     scenario_name: str,
-    layout_type: str,
     layout_id: int,
+    layout_size: str | None,
+    layout_type: str,
+    agent_count: int,
+    task_count: int,
+    mode: str,
+    station_mode: str,
     strategy: str,
     algorithm: str,
-    assignment_type: str,
-    makespan: int | None,
-    plans: list[AgentPlan] | None,
-    *,
-    status: str = "Solved",
-    details: str | None = None,
-    collisions: int | None = None,
-    total_tasks: int | None = None,
+    result: VariantExecutionResult,
+    station_cells: set[Coord],
 ) -> list[object]:
-    missed_deadlines = None if plans is None else sum(len(plan.missed_deadlines) for plan in plans)
-    if collisions is None:
-        collisions = None if plans is None else total_collision_count(plans)
-    if total_tasks is None:
-        total_tasks = 0 if plans is None else sum(len(plan.tasks) for plan in plans)
-
+    plans = result.plans
     return [
         scenario_name,
-        layout_type,
         layout_id,
-        strategy,
-        algorithm,
-        assignment_type,
-        status,
-        details,
-        makespan,
-        missed_deadlines,
-        collisions,
-        total_tasks,
+        layout_size_label(layout_size),
+        layout_type,
+        agent_count,
+        task_count,
+        mode_label(mode),
+        mode_label(station_mode),
+        strategy_label(strategy),
+        algorithm_label(algorithm),
+        status_label(result.status),
+        throughput(task_count, result.makespan),
+        result.makespan,
+        missed_deadline_count(plans),
+        result.collisions,
+        wait_step_count(plans, station_cells),
+        result.replans,
+        distance_step_sum(plans),
+        round(result.simulation_time_seconds, 2),
     ]
 
 
@@ -175,19 +87,83 @@ def column_name(index: int) -> str:
     return name
 
 
-def workbook_cell(row_idx: int, col_idx: int, value: object) -> str:
+def row_text_lines(row: list[object]) -> int:
+    max_lines = 1
+    for value in row:
+        if value is None:
+            continue
+        max_lines = max(max_lines, str(value).count("\n") + 1)
+    return max_lines
+
+
+def row_height(row: list[object], row_idx: int) -> float:
+    base_height = 22.0 if row_idx == 1 else 20.0
+    return base_height * row_text_lines(row)
+
+
+def column_width(value: object) -> float:
+    if value is None:
+        return 0.0
+    text = str(value)
+    longest_line = max((len(line) for line in text.splitlines()), default=0)
+    return min(60.0, max(4.0, float(longest_line + 2)))
+
+
+def column_widths(rows: list[list[object]]) -> list[float]:
+    max_columns = max((len(row) for row in rows), default=0)
+    widths = [4.0] * max_columns
+    for row in rows:
+        for index, value in enumerate(row):
+            widths[index] = max(widths[index], column_width(value))
+    return widths
+
+
+def sort_rows_by_makespan(rows: list[list[object]]) -> list[list[object]]:
+    if len(rows) <= 1:
+        return rows
+
+    header = rows[0]
+    if "makespan" not in header:
+        return rows
+
+    makespan_index = header.index("makespan")
+    data_rows = list(enumerate(rows[1:]))
+    data_rows.sort(
+        key=lambda item: (
+            item[1][makespan_index] is None,
+            float("inf") if item[1][makespan_index] is None else item[1][makespan_index],
+            item[0],
+        )
+    )
+    return [header, *[row for _, row in data_rows]]
+
+
+def workbook_cell(row_idx: int, col_idx: int, value: object, style_id: int) -> str:
     reference = f"{column_name(col_idx)}{row_idx}"
     if value is None:
         return ""
+    style_attr = f' s="{style_id}"'
     if isinstance(value, (int, float)) and not isinstance(value, bool):
-        return f'<c r="{reference}"><v>{value}</v></c>'
+        return f'<c r="{reference}"{style_attr}><v>{value}</v></c>'
 
     text = escape(str(value))
     return (
-        f'<c r="{reference}" t="inlineStr">'
+        f'<c r="{reference}"{style_attr} t="inlineStr">'
         f'<is><t xml:space="preserve">{text}</t></is>'
         f"</c>"
     )
+
+
+def columns_xml(rows: list[list[object]]) -> str:
+    widths = column_widths(rows)
+    if not widths:
+        return ""
+
+    columns = "".join(
+        f'<col min="{index}" max="{index}" width="{width:.2f}" bestFit="1" customWidth="1"/>'
+        for index, width in enumerate(widths, start=1)
+    )
+    return f"<cols>{columns}</cols>"
 
 
 def sheet_xml(rows: list[list[object]]) -> str:
@@ -197,23 +173,25 @@ def sheet_xml(rows: list[list[object]]) -> str:
 
     row_xml = []
     for row_idx, row in enumerate(rows, start=1):
+        style_id = 1 if row_idx == 1 else 0
         cells = "".join(
-            workbook_cell(row_idx, col_idx, value)
+            workbook_cell(row_idx, col_idx, value, style_id)
             for col_idx, value in enumerate(row, start=1)
             if value is not None
         )
-        row_xml.append(f'<row r="{row_idx}">{cells}</row>')
+        row_xml.append(f'<row r="{row_idx}" ht="{row_height(row, row_idx):.2f}" customHeight="1">{cells}</row>')
 
     return (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
         '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
         f'<dimension ref="{dimension}"/>'
         '<sheetViews><sheetView workbookViewId="0"/></sheetViews>'
-        '<sheetFormatPr defaultRowHeight="15"/>'
-        "<sheetData>"
+        '<sheetFormatPr defaultRowHeight="20"/>'
+        + columns_xml(rows)
+        + "<sheetData>"
         + "".join(row_xml)
         + "</sheetData>"
-        "</worksheet>"
+        + "</worksheet>"
     )
 
 
@@ -236,6 +214,8 @@ def content_types_xml(sheet_count: int) -> str:
         'ContentType="application/vnd.openxmlformats-package.core-properties+xml"/>'
         '<Override PartName="/docProps/app.xml" '
         'ContentType="application/vnd.openxmlformats-officedocument.extended-properties+xml"/>'
+        '<Override PartName="/xl/styles.xml" '
+        'ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>'
         + worksheet_overrides
         + "</Types>"
     )
@@ -286,10 +266,16 @@ def workbook_rels_xml(sheet_count: int) -> str:
         )
         for index in range(1, sheet_count + 1)
     )
+    styles_relationship = (
+        f'<Relationship Id="rId{sheet_count + 1}" '
+        'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" '
+        'Target="styles.xml"/>'
+    )
     return (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
         '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
         + relationships
+        + styles_relationship
         + "</Relationships>"
     )
 
@@ -331,15 +317,44 @@ def core_xml() -> str:
     )
 
 
+def styles_xml() -> str:
+    return (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+        '<fonts count="2">'
+        '<font><sz val="11"/><color theme="1"/><name val="Calibri"/><family val="2"/></font>'
+        '<font><b/><sz val="11"/><color theme="1"/><name val="Calibri"/><family val="2"/></font>'
+        "</fonts>"
+        '<fills count="2">'
+        '<fill><patternFill patternType="none"/></fill>'
+        '<fill><patternFill patternType="gray125"/></fill>'
+        "</fills>"
+        '<borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>'
+        '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>'
+        '<cellXfs count="2">'
+        '<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyAlignment="1">'
+        '<alignment horizontal="center" vertical="center" wrapText="1"/>'
+        "</xf>"
+        '<xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1" applyAlignment="1">'
+        '<alignment horizontal="center" vertical="center" wrapText="1"/>'
+        "</xf>"
+        "</cellXfs>"
+        '<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>'
+        "</styleSheet>"
+    )
+
+
 def write_xlsx_workbook(path: Path, sheets: list[tuple[str, list[list[object]]]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    sheet_names = [name for name, _ in sheets]
+    normalized_sheets = [(name, sort_rows_by_makespan(rows)) for name, rows in sheets]
+    sheet_names = [name for name, _ in normalized_sheets]
     with ZipFile(path, "w", compression=ZIP_DEFLATED) as workbook:
-        workbook.writestr("[Content_Types].xml", content_types_xml(len(sheets)))
+        workbook.writestr("[Content_Types].xml", content_types_xml(len(normalized_sheets)))
         workbook.writestr("_rels/.rels", root_rels_xml())
         workbook.writestr("xl/workbook.xml", workbook_xml(sheet_names))
-        workbook.writestr("xl/_rels/workbook.xml.rels", workbook_rels_xml(len(sheets)))
+        workbook.writestr("xl/_rels/workbook.xml.rels", workbook_rels_xml(len(normalized_sheets)))
         workbook.writestr("docProps/app.xml", app_xml(sheet_names))
         workbook.writestr("docProps/core.xml", core_xml())
-        for index, (_, rows) in enumerate(sheets, start=1):
+        workbook.writestr("xl/styles.xml", styles_xml())
+        for index, (_, rows) in enumerate(normalized_sheets, start=1):
             workbook.writestr(f"xl/worksheets/sheet{index}.xml", sheet_xml(rows))

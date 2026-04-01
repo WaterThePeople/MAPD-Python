@@ -1,6 +1,7 @@
 Agents: 20
 Tasks: 100
-Layout: [9]
+Size: Large
+Layout: [0]
 Mode: [Set,Available]
 Station: [Set,Available]
 Strategy: [FCFS,Robin,GreedyCost]
