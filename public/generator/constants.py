@@ -54,9 +54,9 @@ SIZE_PROFILES = {
     "large": SizeProfile(
         label="Large",
         min_agents=61,
-        max_agents=132,
-        station_count=132,
-        shelf_count=792,
+        max_agents=120,
+        station_count=120,
+        shelf_count=720,
         max_replans=15,
         default_wave_radius=18,
     ),

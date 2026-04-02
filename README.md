@@ -49,12 +49,12 @@ The third generator argument is a comma-separated list of layout ids.
 The layout size is selected automatically from the number of agents:
 - `1-20` agents -> `small`
 - `21-60` agents -> `medium`
-- `61-132` agents -> `large`
+- `61-120` agents -> `large`
 
 The built-in warehouse profiles currently expose:
 - `small`: `20` stations, `120` shelves
 - `medium`: `60` stations, `360` shelves
-- `large`: `132` stations, `792` shelves
+- `large`: `120` stations, `720` shelves
 
 The generator creates a dedicated folder in `public/scenarios/`:
 `public/scenarios/<agents>-<tasks>-<size>-<seed>/`
