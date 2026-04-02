@@ -1,7 +1,10 @@
 ﻿import argparse
 import re
+import os
 import sys
 import time
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from dataclasses import dataclass
 from pathlib import Path
 
 from mapd.collisions import total_collision_count
@@ -14,7 +17,13 @@ from mapd.loader import (
     normalize_layout_type,
     resolve_scenario_variant,
 )
-from mapd.models import PlanningLimitExceeded, PlanningStats, ScenarioDefinition, VariantExecutionResult
+from mapd.models import (
+    PlanningLimitExceeded,
+    PlanningStats,
+    ScenarioDefinition,
+    ScenarioVariant,
+    VariantExecutionResult,
+)
 from mapd.planner import build_agent_plans, build_relaxed_agent_plans
 from mapd.report_metrics import (
     algorithm_label,
@@ -65,11 +74,45 @@ STRATEGY_CHOICES = ["FCFS", "Robin", "GreedyCost", "None"]
 ALGORITHM_CHOICES = ["A*", "SIPP", "BFS"]
 SUITE_ONLY_ALLOWED_FLAGS = {
     "--gif",
+    "--jobs",
+    "--layout",
+    "--type",
+    "--mode",
+    "--station",
+    "--strategy",
+    "--algorithm",
     "--suite-output-dir",
     "--results-dir",
     "--cell-size",
     "--frame-duration",
 }
+
+
+@dataclass(frozen=True)
+class SuiteVariantTask:
+    index: int
+    total_variants: int
+    scenario_label: str
+    definition: ScenarioDefinition
+    variant: ScenarioVariant
+    resolved_layout_id: int
+    resolved_layout_path: str
+    resolved_layout_type: str
+    output_path: str | None
+    cell_size: int
+    frame_duration: int
+    render_gif: bool
+
+
+@dataclass(frozen=True)
+class SuiteVariantOutcome:
+    index: int
+    header: str
+    summary: str
+    comparison_row: list[object]
+
+
+_WORKER_WAREHOUSE_CACHE: dict[tuple[str, str], object] = {}
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -125,6 +168,11 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=DEFAULT_FRAME_DURATION,
         help=f"GIF frame duration in milliseconds. Default: {DEFAULT_FRAME_DURATION}",
+    )
+    parser.add_argument(
+        "--jobs",
+        type=int,
+        help="Suite only. Number of worker processes, capped at 10%% of all variants. Default: auto when --gif is off, otherwise 1.",
     )
     parser.add_argument(
         "--mode",
@@ -185,11 +233,16 @@ def validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace, exp
         parser.error("--cell-size must be a positive integer.")
     if args.frame_duration <= 0:
         parser.error("--frame-duration must be a positive integer.")
+    if args.jobs is not None and args.jobs <= 0:
+        parser.error("--jobs must be a positive integer.")
     if args.fallback_gif and not args.gif:
         parser.error("--fallback-gif requires --gif.")
 
     if args.suite is None:
         return
+
+    if "--layout" in explicit_flags and infer_layout_id(args.layout) is None:
+        parser.error("--layout in suite mode must be a layout id or a file name that contains one.")
 
     unsupported = sorted(
         flag
@@ -498,7 +551,6 @@ def execute_variant(
     render_gif: bool,
     debug_frames_dir: Path | None = None,
     *,
-    time_limit_steps: int | None = None,
     max_replans: int | None = None,
 ) -> VariantExecutionResult:
     stats = PlanningStats(max_replans=max_replans)
@@ -584,30 +636,24 @@ def execute_variant(
                 simulation_time_seconds=time.perf_counter() - started_at,
             )
 
-        return apply_time_limit(
-            VariantExecutionResult(
-                status=STATUS_NO_SOLUTION,
-                details=str(exc),
-                makespan=relaxed_makespan,
-                plans=relaxed_plans,
-                collisions=total_collision_count(relaxed_plans),
-                replans=stats.replans,
-                simulation_time_seconds=time.perf_counter() - started_at,
-            ),
-            time_limit_steps,
-        )
-
-    return apply_time_limit(
-        VariantExecutionResult(
-            status=STATUS_SOLVED,
-            details=None,
-            makespan=makespan,
-            plans=plans,
-            collisions=total_collision_count(plans),
+        return VariantExecutionResult(
+            status=STATUS_NO_SOLUTION,
+            details=str(exc),
+            makespan=relaxed_makespan,
+            plans=relaxed_plans,
+            collisions=total_collision_count(relaxed_plans),
             replans=stats.replans,
             simulation_time_seconds=time.perf_counter() - started_at,
-        ),
-        time_limit_steps,
+        )
+
+    return VariantExecutionResult(
+        status=STATUS_SOLVED,
+        details=None,
+        makespan=makespan,
+        plans=plans,
+        collisions=total_collision_count(plans),
+        replans=stats.replans,
+        simulation_time_seconds=time.perf_counter() - started_at,
     )
 
 
@@ -700,28 +746,6 @@ def validate_scenario_metadata(
         )
 
 
-def apply_time_limit(
-    result: VariantExecutionResult,
-    time_limit_steps: int | None,
-) -> VariantExecutionResult:
-    if time_limit_steps is None or result.makespan is None or result.makespan <= time_limit_steps:
-        return result
-
-    detail = f"Scenario time limit exceeded: makespan {result.makespan} > {time_limit_steps} steps."
-    if result.details is not None:
-        detail = f"{result.details} {detail}"
-
-    return VariantExecutionResult(
-        status=STATUS_NO_SOLUTION,
-        details=detail,
-        makespan=result.makespan,
-        plans=result.plans,
-        collisions=result.collisions,
-        replans=result.replans,
-        simulation_time_seconds=result.simulation_time_seconds,
-    )
-
-
 def build_debug_frames_dir(scenario_path: Path) -> Path:
     return DEFAULT_DEBUG_FRAMES_ROOT / scenario_path.stem
 
@@ -735,6 +759,219 @@ def build_single_gif_output_path(output_arg: str | None) -> Path:
     return Path(DEFAULT_SUITE_OUTPUT_DIR) / requested
 
 
+def variant_matches_suite_filters(
+    variant: ScenarioVariant,
+    args: argparse.Namespace,
+    explicit_flags: set[str],
+) -> bool:
+    if "--layout" in explicit_flags:
+        requested_layout_id = infer_layout_id(args.layout)
+        if requested_layout_id is not None and variant.layout_id != requested_layout_id:
+            return False
+    if "--type" in explicit_flags and variant.layout_type != args.layout_type:
+        return False
+    if "--mode" in explicit_flags and variant.mode != args.mode:
+        return False
+    if "--station" in explicit_flags and variant.station_mode != args.station:
+        return False
+    if "--algorithm" in explicit_flags and variant.algorithm != args.algorithm:
+        return False
+    if "--strategy" in explicit_flags and variant.strategy != args.strategy:
+        return False
+    return True
+
+
+def filter_suite_variants(
+    variants: list[ScenarioVariant],
+    args: argparse.Namespace,
+    explicit_flags: set[str],
+) -> list[ScenarioVariant]:
+    if not any(
+        flag in explicit_flags
+        for flag in ("--layout", "--type", "--mode", "--station", "--strategy", "--algorithm")
+    ):
+        return variants
+    return [variant for variant in variants if variant_matches_suite_filters(variant, args, explicit_flags)]
+
+
+def resolve_suite_jobs(jobs: int | None, render_gif: bool, total_variants: int) -> int:
+    max_worker_limit = max(1, total_variants // 10)
+    if jobs is not None:
+        return min(max_worker_limit, jobs)
+    if render_gif:
+        return 1
+
+    cpu_count = os.cpu_count() or 1
+    return min(max_worker_limit, max(1, cpu_count - 1))
+
+
+def load_worker_warehouse(layout_path: str, layout_type: str):
+    cache_key = (layout_path, layout_type)
+    cached = _WORKER_WAREHOUSE_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
+    warehouse = load_layout(Path(layout_path), layout_type)
+    _WORKER_WAREHOUSE_CACHE[cache_key] = warehouse
+    return warehouse
+
+
+def build_suite_variant_task(
+    index: int,
+    total_variants: int,
+    scenario_path: Path,
+    definition: ScenarioDefinition,
+    variant: ScenarioVariant,
+    output_dir: Path,
+    *,
+    render_gif: bool,
+    cell_size: int,
+    frame_duration: int,
+) -> SuiteVariantTask:
+    scenario_label = scenario_name(definition, scenario_path)
+    resolved_layout_id, resolved_layout_path, resolved_layout_type = resolve_layout_reference(
+        None,
+        variant.layout_id,
+        variant.layout_type,
+        definition.layout_size,
+    )
+    current_label = variant_label(
+        scenario_label,
+        definition.layout_size,
+        resolved_layout_id,
+        variant.layout_type,
+        variant.mode,
+        variant.station_mode,
+        variant.strategy,
+        variant.algorithm,
+    )
+    output_path = str(output_dir / f"{current_label}.gif") if render_gif else None
+    return SuiteVariantTask(
+        index=index,
+        total_variants=total_variants,
+        scenario_label=scenario_label,
+        definition=definition,
+        variant=variant,
+        resolved_layout_id=resolved_layout_id,
+        resolved_layout_path=str(resolved_layout_path),
+        resolved_layout_type=resolved_layout_type,
+        output_path=output_path,
+        cell_size=cell_size,
+        frame_duration=frame_duration,
+        render_gif=render_gif,
+    )
+
+
+def run_suite_variant_task(task: SuiteVariantTask) -> SuiteVariantOutcome:
+    warehouse = load_worker_warehouse(task.resolved_layout_path, task.resolved_layout_type)
+    validate_scenario_metadata(task.definition, warehouse)
+    output_path = Path(task.output_path) if task.output_path is not None else None
+    header = (
+        f"[{task.index}/{task.total_variants}] "
+        + variant_description(
+            task.scenario_label,
+            task.resolved_layout_id,
+            task.definition.layout_size,
+            task.variant.layout_type,
+            task.variant.mode,
+            task.variant.station_mode,
+            task.variant.strategy,
+            task.variant.algorithm,
+        )
+    )
+
+    result = execute_variant(
+        warehouse,
+        task.definition.agent_count,
+        task.definition.tasks,
+        task.variant.mode,
+        task.variant.station_mode,
+        task.variant.strategy,
+        task.variant.algorithm,
+        output_path,
+        task.cell_size,
+        task.frame_duration,
+        progress=task.render_gif,
+        render_gif=task.render_gif,
+        max_replans=task.definition.metadata.max_replans,
+    )
+    station_cells = set(warehouse.stations)
+    return SuiteVariantOutcome(
+        index=task.index,
+        header=header,
+        summary=variant_result_summary(
+            result,
+            len(task.definition.tasks),
+            station_cells,
+            output_path,
+            None,
+        ),
+        comparison_row=build_comparison_row(
+            task.scenario_label,
+            task.resolved_layout_id,
+            task.definition.layout_size,
+            task.variant.layout_type,
+            task.definition.agent_count,
+            len(task.definition.tasks),
+            task.definition.metadata,
+            task.variant.mode,
+            task.variant.station_mode,
+            task.variant.strategy,
+            task.variant.algorithm,
+            result,
+            station_cells,
+        ),
+    )
+
+
+def execute_suite_tasks(tasks: list[SuiteVariantTask], worker_count: int) -> list[SuiteVariantOutcome]:
+    outcomes: list[SuiteVariantOutcome | None] = [None] * len(tasks)
+    if worker_count <= 1:
+        for task in tasks:
+            outcome = run_suite_variant_task(task)
+            outcomes[outcome.index - 1] = outcome
+            print(outcome.header)
+            print("  " + outcome.summary)
+        return [outcome for outcome in outcomes if outcome is not None]
+
+    print(f"[suite] Running {len(tasks)} variants with {worker_count} workers.")
+    try:
+        with ProcessPoolExecutor(max_workers=worker_count) as executor:
+            future_to_task = {
+                executor.submit(run_suite_variant_task, task): task
+                for task in tasks
+            }
+            for future in as_completed(future_to_task):
+                task = future_to_task[future]
+                try:
+                    outcome = future.result()
+                except Exception as exc:
+                    for pending in future_to_task:
+                        pending.cancel()
+                    raise RuntimeError(
+                        "Suite worker failed for "
+                        + variant_description(
+                            task.scenario_label,
+                            task.resolved_layout_id,
+                            task.definition.layout_size,
+                            task.variant.layout_type,
+                            task.variant.mode,
+                            task.variant.station_mode,
+                            task.variant.strategy,
+                            task.variant.algorithm,
+                        )
+                    ) from exc
+
+                outcomes[outcome.index - 1] = outcome
+                print(outcome.header)
+                print("  " + outcome.summary)
+    except PermissionError:
+        print("[suite] Parallel workers are unavailable in this environment, falling back to serial execution.")
+        return execute_suite_tasks(tasks, 1)
+
+    return [outcome for outcome in outcomes if outcome is not None]
+
+
 def run_suite(args: argparse.Namespace) -> None:
     suite_name, scenario_paths = derive_suite_paths(args.suite)
     missing = [str(path) for path in scenario_paths if not path.exists()]
@@ -743,110 +980,44 @@ def run_suite(args: argparse.Namespace) -> None:
 
     comparison_rows = [COMPARISON_HEADERS]
     output_dir = Path(args.suite_output_dir)
-    warehouse_cache: dict[tuple[str | None, int, str], tuple[int, Path, str, object]] = {}
     suite_entries = []
     total_variants = 0
 
     for scenario_path in scenario_paths:
         definition = load_scenario_definition(scenario_path)
-        variants = expand_scenario_variants(definition)
+        variants = filter_suite_variants(
+            expand_scenario_variants(definition),
+            args,
+            args.explicit_flags,
+        )
         suite_entries.append((scenario_path, definition, variants))
         total_variants += len(variants)
 
+    if total_variants == 0:
+        raise ValueError("No suite variants matched the selected filters.")
+
+    variant_tasks: list[SuiteVariantTask] = []
     variant_index = 0
     for scenario_path, definition, variants in suite_entries:
-        scenario_label = scenario_name(definition, scenario_path)
         for variant in variants:
             variant_index += 1
-            prefix = f"[{variant_index}/{total_variants}]"
-            cache_key = (definition.layout_size, variant.layout_id, variant.layout_type)
-            if cache_key not in warehouse_cache:
-                resolved_layout_id, resolved_layout_path, resolved_layout_type = resolve_layout_reference(
-                    None,
-                    variant.layout_id,
-                    variant.layout_type,
-                    definition.layout_size,
-                )
-                warehouse = load_layout(resolved_layout_path, resolved_layout_type)
-                warehouse_cache[cache_key] = (
-                    resolved_layout_id,
-                    resolved_layout_path,
-                    resolved_layout_type,
-                    warehouse,
-                )
-
-            resolved_layout_id, _, _, warehouse = warehouse_cache[cache_key]
-            validate_scenario_metadata(definition, warehouse)
-            current_label = variant_label(
-                scenario_label,
-                definition.layout_size,
-                resolved_layout_id,
-                variant.layout_type,
-                variant.mode,
-                variant.station_mode,
-                variant.strategy,
-                variant.algorithm,
-            )
-            output_path = output_dir / f"{current_label}.gif" if args.gif else None
-            print(
-                f"{prefix} "
-                + variant_description(
-                    scenario_label,
-                    resolved_layout_id,
-                    definition.layout_size,
-                    variant.layout_type,
-                    variant.mode,
-                    variant.station_mode,
-                    variant.strategy,
-                    variant.algorithm,
+            variant_tasks.append(
+                build_suite_variant_task(
+                    variant_index,
+                    total_variants,
+                    scenario_path,
+                    definition,
+                    variant,
+                    output_dir,
+                    render_gif=args.gif,
+                    cell_size=args.cell_size,
+                    frame_duration=args.frame_duration,
                 )
             )
 
-            result = execute_variant(
-                warehouse,
-                definition.agent_count,
-                definition.tasks,
-                variant.mode,
-                variant.station_mode,
-                variant.strategy,
-                variant.algorithm,
-                output_path,
-                args.cell_size,
-                args.frame_duration,
-                progress=args.gif,
-                render_gif=args.gif,
-                time_limit_steps=definition.metadata.time_limit_steps,
-                max_replans=definition.metadata.max_replans,
-            )
-
-            print(
-                "  "
-                + variant_result_summary(
-                    result,
-                    len(definition.tasks),
-                    set(warehouse.stations),
-                    output_path,
-                    None,
-                )
-            )
-
-            comparison_rows.append(
-                build_comparison_row(
-                    scenario_label,
-                    resolved_layout_id,
-                    definition.layout_size,
-                    variant.layout_type,
-                    definition.agent_count,
-                    len(definition.tasks),
-                    definition.metadata,
-                    variant.mode,
-                    variant.station_mode,
-                    variant.strategy,
-                    variant.algorithm,
-                    result,
-                    set(warehouse.stations),
-                )
-            )
+    worker_count = resolve_suite_jobs(args.jobs, args.gif, total_variants)
+    outcomes = execute_suite_tasks(variant_tasks, worker_count)
+    comparison_rows.extend(outcome.comparison_row for outcome in outcomes)
 
     if len(suite_entries) == 1:
         results_name = scenario_name(suite_entries[0][1], suite_entries[0][0])
@@ -923,7 +1094,6 @@ def run_single_scenario(args: argparse.Namespace) -> None:
         progress=render_gif,
         render_gif=render_gif,
         debug_frames_dir=debug_frames_dir,
-        time_limit_steps=definition.metadata.time_limit_steps,
         max_replans=definition.metadata.max_replans,
     )
     print(

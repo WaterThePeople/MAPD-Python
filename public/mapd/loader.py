@@ -357,6 +357,19 @@ def _parse_optional_float_header(
     return value
 
 
+def _parse_optional_float_headers(
+    text: str,
+    labels: tuple[str, ...],
+    *,
+    min_value: float | None = None,
+) -> float | None:
+    for label in labels:
+        value = _parse_optional_float_header(text, label, min_value=min_value)
+        if value is not None:
+            return value
+    return None
+
+
 def _normalize_influx(value: str) -> str:
     key = value.strip().lower()
     if key not in SUPPORTED_INFLUX_TYPES:
@@ -375,12 +388,7 @@ def _parse_scenario_metadata(text: str) -> ScenarioMetadata:
     metadata = ScenarioMetadata(
         scenario_id=_parse_optional_text_header(text, "ID"),
         seed=_parse_optional_int_header(text, "Seed", min_value=0),
-        hours=_parse_optional_float_header(text, "Hours", min_value=0.0),
-        duration_seconds=_parse_optional_int_header(text, "DurationSeconds", min_value=1),
-        step_seconds=_parse_optional_int_header(text, "StepSeconds", min_value=1),
-        time_limit_steps=_parse_optional_int_header(text, "TimeLimitSteps", min_value=1),
         load_factor=_parse_optional_float_header(text, "LoadFactor", min_value=0.0),
-        tasks_per_agent_per_hour=_parse_optional_float_header(text, "TasksPerAgentPerHour", min_value=0.0),
         capacity_model=_parse_optional_text_header(text, "CapacityModel"),
         capacity_reserve=_parse_optional_float_header(text, "CapacityReserve", min_value=0.0),
         capacity_steps_per_task=_parse_optional_float_header(text, "CapacityStepsPerTask", min_value=0.0),
@@ -391,7 +399,7 @@ def _parse_scenario_metadata(text: str) -> ScenarioMetadata:
             if _find_header_value(text, "Influx") is not None
             else None
         ),
-        lambda_per_hour=_parse_optional_float_header(text, "LambdaPerHour", min_value=0.0),
+        lambda_value=_parse_optional_float_headers(text, ("Lambda", "LambdaPerHour"), min_value=0.0),
         burst_amount=_parse_optional_int_header(text, "BurstAmount", min_value=0),
         burst_start_step=_parse_optional_int_header(text, "BurstStartStep", min_value=0),
         burst_duration_steps=_parse_optional_int_header(text, "BurstDurationSteps", min_value=0),
@@ -414,48 +422,13 @@ def _parse_scenario_metadata(text: str) -> ScenarioMetadata:
 
 
 def _validate_scenario_metadata(metadata: ScenarioMetadata) -> None:
-    if metadata.duration_seconds is not None and metadata.hours is not None:
-        expected_duration = round(metadata.hours * 3600)
-        if metadata.duration_seconds != expected_duration:
-            raise ValueError(
-                "Scenario headers 'Hours' and 'DurationSeconds' must describe the same duration. "
-                f"Expected DurationSeconds={expected_duration}, got {metadata.duration_seconds}."
-            )
-
-    if (
-        metadata.duration_seconds is not None
-        and metadata.step_seconds is not None
-        and metadata.time_limit_steps is not None
-    ):
-        if metadata.duration_seconds % metadata.step_seconds != 0:
-            raise ValueError(
-                "Scenario header 'DurationSeconds' must be divisible by 'StepSeconds'."
-            )
-        expected_time_limit = metadata.duration_seconds // metadata.step_seconds
-        if metadata.time_limit_steps != expected_time_limit:
-            raise ValueError(
-                "Scenario header 'TimeLimitSteps' must match DurationSeconds / StepSeconds. "
-                f"Expected {expected_time_limit}, got {metadata.time_limit_steps}."
-            )
-    elif (
-        metadata.hours is not None
-        and metadata.step_seconds is not None
-        and metadata.time_limit_steps is not None
-    ):
-        expected_time_limit = round(metadata.hours * 3600 / metadata.step_seconds)
-        if metadata.time_limit_steps != expected_time_limit:
-            raise ValueError(
-                "Scenario header 'TimeLimitSteps' must match Hours * 3600 / StepSeconds. "
-                f"Expected {expected_time_limit}, got {metadata.time_limit_steps}."
-            )
-
     if metadata.hotspot_shelf_share is not None and metadata.hotspot_shelf_share > 1.0:
         raise ValueError("Scenario header 'HotspotShelfShare' must be <= 1.0.")
     if metadata.hotspot_task_share is not None and metadata.hotspot_task_share > 1.0:
         raise ValueError("Scenario header 'HotspotTaskShare' must be <= 1.0.")
 
-    if metadata.influx == "Poisson" and metadata.lambda_per_hour is None:
-        raise ValueError("Scenario header 'LambdaPerHour' is required when Influx is Poisson.")
+    if metadata.influx == "Poisson" and metadata.lambda_value is None:
+        raise ValueError("Scenario header 'Lambda' is required when Influx is Poisson.")
     if metadata.influx == "Burst":
         required_burst_headers = {
             "BurstAmount": metadata.burst_amount,

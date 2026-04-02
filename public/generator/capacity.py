@@ -55,11 +55,3 @@ def estimate_batch_capacity_steps_per_task(layout_contexts: dict[int, LayoutCont
     if not layout_contexts:
         raise ValueError("At least one layout is required to estimate capacity.")
     return max(estimate_layout_capacity_steps_per_task(layout) for layout in layout_contexts.values())
-
-
-def estimate_tasks_per_agent_per_hour(
-    capacity_steps_per_task: float,
-    step_seconds: int,
-    capacity_reserve: float,
-) -> float:
-    return capacity_reserve * (3600 / step_seconds) / capacity_steps_per_task

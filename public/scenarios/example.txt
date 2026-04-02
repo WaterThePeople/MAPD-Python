@@ -12,13 +12,13 @@ Algorithm: [A*,SIPP,BFS]
 
 Agents: 5
 Tasks: 10
-DurationSeconds: 3600
-StepSeconds: 10
-TimeLimitSteps: 360
-TasksPerAgentPerHour: 10
+CapacityModel: LayoutExpectedCost
+CapacityStepsPerTask: 38.47
+SetAssignmentPolicy: RoundRobin
+MaxOpenTasksOnShelves: 120
 
 Influx: Poisson
-LambdaPerHour: 50
+Lambda: 0.33
 BurstAmount: 0
 BurstStartStep: 0
 BurstDurationSteps: 0

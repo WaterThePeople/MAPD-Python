@@ -1,3 +1,5 @@
+from collections import deque
+
 from mapd.models import Coord
 
 
@@ -35,6 +37,8 @@ class WarehouseMap:
         self.height = len(rows)
         self.width = width
         self.layout_type = layout_type
+        self._neighbors_cache: dict[Coord, tuple[Coord, ...]] = {}
+        self._pickup_positions_cache: dict[int, frozenset[Coord]] = {}
 
         self.traversable: set[Coord] = set()
         self.stations: list[Coord] = []
@@ -90,8 +94,14 @@ class WarehouseMap:
             raise ValueError(f"Coordinate {coord} is not a shelf cell.")
         return self._shelf_index_by_coord[coord]
 
-    def neighbors(self, coord: Coord) -> list[Coord]:
-        return [next_coord for next_coord in self._candidate_neighbors(coord) if next_coord in self.traversable]
+    def neighbors(self, coord: Coord) -> tuple[Coord, ...]:
+        cached = self._neighbors_cache.get(coord)
+        if cached is not None:
+            return cached
+
+        resolved = tuple(next_coord for next_coord in self._candidate_neighbors(coord) if next_coord in self.traversable)
+        self._neighbors_cache[coord] = resolved
+        return resolved
 
     def distance(self, src: Coord, dst: Coord) -> int:
         if self.layout_type == "hexagon":
@@ -100,13 +110,18 @@ class WarehouseMap:
             return self._triangle_distance(src, dst)
         return abs(src[0] - dst[0]) + abs(src[1] - dst[1])
 
-    def pickup_positions(self, shelf_index: int) -> set[Coord]:
+    def pickup_positions(self, shelf_index: int) -> frozenset[Coord]:
+        cached = self._pickup_positions_cache.get(shelf_index)
+        if cached is not None:
+            return cached
+
         shelf_coord = self.shelf_index_to_coord(shelf_index)
-        positions = set(self.neighbors(shelf_coord))
+        positions = frozenset(self.neighbors(shelf_coord))
         if not positions:
-            positions = self._component_pickup_positions(shelf_coord)
+            positions = frozenset(self._component_pickup_positions(shelf_coord))
         if not positions:
             raise ValueError(f"Shelf {shelf_index} has no accessible pickup position.")
+        self._pickup_positions_cache[shelf_index] = positions
         return positions
 
     def _candidate_neighbors(self, coord: Coord) -> list[Coord]:
@@ -118,12 +133,12 @@ class WarehouseMap:
 
     def _component_pickup_positions(self, start: Coord) -> set[Coord]:
         component_depth = {start: 0}
-        queue = [start]
+        queue = deque([start])
         positions = set()
         best_depth = None
 
         while queue:
-            current = queue.pop(0)
+            current = queue.popleft()
             depth = component_depth[current]
             direct_positions = {next_coord for next_coord in self._candidate_neighbors(current) if next_coord in self.traversable}
             if direct_positions:

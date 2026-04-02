@@ -20,15 +20,15 @@ def choose_agent(
     return rng.randrange(len(assignment_counts))
 
 
-def generate_random_release_times(task_count: int, time_limit_steps: int, rng: random.Random) -> list[int]:
-    return sorted(rng.randrange(time_limit_steps) for _ in range(task_count))
+def generate_random_release_times(task_count: int, release_horizon_steps: int, rng: random.Random) -> list[int]:
+    return sorted(rng.randrange(release_horizon_steps) for _ in range(task_count))
 
 
-def generate_poisson_release_times(task_count: int, time_limit_steps: int, rng: random.Random) -> list[int]:
-    if task_count <= 1 or time_limit_steps <= 1:
+def generate_poisson_release_times(task_count: int, release_horizon_steps: int, rng: random.Random) -> list[int]:
+    if task_count <= 1 or release_horizon_steps <= 1:
         return [0] * task_count
 
-    rate_per_step = task_count / time_limit_steps
+    rate_per_step = task_count / release_horizon_steps
     event_times = []
     current = 0.0
     for _ in range(task_count):
@@ -39,24 +39,24 @@ def generate_poisson_release_times(task_count: int, time_limit_steps: int, rng: 
     if latest <= 0:
         return [0] * task_count
 
-    scale = max(1, time_limit_steps - 1) / latest
-    return sorted(min(time_limit_steps - 1, int(round(event_time * scale))) for event_time in event_times)
+    scale = max(1, release_horizon_steps - 1) / latest
+    return sorted(min(release_horizon_steps - 1, int(round(event_time * scale))) for event_time in event_times)
 
 
 def sample_outside_burst(
     task_count: int,
     burst_start_step: int,
     burst_end_step: int,
-    time_limit_steps: int,
+    release_horizon_steps: int,
     rng: random.Random,
 ) -> list[int]:
     outside_ranges: list[tuple[int, int]] = []
     if burst_start_step > 0:
         outside_ranges.append((0, burst_start_step))
-    if burst_end_step < time_limit_steps:
-        outside_ranges.append((burst_end_step, time_limit_steps))
+    if burst_end_step < release_horizon_steps:
+        outside_ranges.append((burst_end_step, release_horizon_steps))
     if not outside_ranges:
-        return [min(time_limit_steps - 1, burst_start_step)] * task_count
+        return [min(release_horizon_steps - 1, burst_start_step)] * task_count
 
     weights = [end - start for start, end in outside_ranges]
     releases = []

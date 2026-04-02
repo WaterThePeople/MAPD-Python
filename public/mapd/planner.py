@@ -2,6 +2,7 @@ import colorsys
 import heapq
 import time
 from collections import defaultdict
+from functools import lru_cache
 
 from mapd.algorithms import get_algorithm, normalize_algorithm_name
 from mapd.algorithms.base import SearchProblem, reconstruct_path
@@ -46,13 +47,14 @@ class ReservationTable:
             self.latest_time = max(self.latest_time, final_time)
 
 
-def build_color_palette(count: int) -> list[tuple[int, int, int]]:
+@lru_cache(maxsize=None)
+def build_color_palette(count: int) -> tuple[tuple[int, int, int], ...]:
     palette = []
     for idx in range(count):
         hue = idx / count
         red, green, blue = colorsys.hsv_to_rgb(hue, 0.75, 0.92)
         palette.append((int(red * 255), int(green * 255), int(blue * 255)))
-    return palette
+    return tuple(palette)
 
 
 def goal_heuristic(warehouse: WarehouseMap, coord: Coord, goals: set[Coord]) -> int:

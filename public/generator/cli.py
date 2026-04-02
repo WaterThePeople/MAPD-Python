@@ -4,8 +4,8 @@ import argparse
 import random
 from pathlib import Path
 
-from .capacity import estimate_batch_capacity_steps_per_task, estimate_tasks_per_agent_per_hour
-from .constants import DEFAULT_CAPACITY_RESERVE, DEFAULT_STEP_SECONDS, SIZE_PROFILES
+from .capacity import estimate_batch_capacity_steps_per_task
+from .constants import SIZE_PROFILES
 from .definitions import BatchConfig, LayoutContext
 from .layouts import build_layout_context
 from .scenarios import generate_batch, save_batch
@@ -53,11 +53,7 @@ def build_parser() -> argparse.ArgumentParser:
         )
     )
     parser.add_argument("agents", type=positive_int, help="Number of agents.")
-    parser.add_argument(
-        "time_limit_steps",
-        type=positive_int,
-        help="Maximum simulation makespan in steps. One step represents 10 seconds.",
-    )
+    parser.add_argument("task_count", type=positive_int, help="Number of tasks to distribute across the scenario.")
     parser.add_argument(
         "layouts",
         type=parse_layout_ids,
@@ -100,30 +96,18 @@ def resolve_batch_config(
     size_key = determine_size_key(args.agents)
     seed = resolve_seed(args.seed)
     capacity_steps_per_task = estimate_batch_capacity_steps_per_task(layout_contexts)
-    tasks_per_agent_per_hour = estimate_tasks_per_agent_per_hour(
-        capacity_steps_per_task,
-        DEFAULT_STEP_SECONDS,
-        DEFAULT_CAPACITY_RESERVE,
-    )
     config = BatchConfig(
         agents=args.agents,
+        task_count=args.task_count,
         layout_ids=args.layouts,
-        time_limit_steps=args.time_limit_steps,
-        step_seconds=DEFAULT_STEP_SECONDS,
-        tasks_per_agent_per_hour=tasks_per_agent_per_hour,
         capacity_steps_per_task=capacity_steps_per_task,
-        capacity_reserve=DEFAULT_CAPACITY_RESERVE,
         seed=seed,
         output_root=args.output_root,
         size_key=size_key,
     )
 
-    if config.time_limit_steps < 1:
-        raise ValueError("TimeLimitSteps must be at least 1.")
     if config.task_count < 1:
-        raise ValueError(
-            "The selected horizon is too short to generate at least one task with the current capacity model."
-        )
+        raise ValueError("TaskCount must be at least 1.")
     return config
 
 

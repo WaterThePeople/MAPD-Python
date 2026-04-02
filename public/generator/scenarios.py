@@ -51,13 +51,13 @@ def serialize_scenario(config: ScenarioConfig, tasks: list[Task]) -> str:
         "",
         f"Agents: {config.agents}",
         f"Tasks: {len(tasks)}",
-        f"DurationSeconds: {config.duration_seconds}",
-        f"StepSeconds: {config.step_seconds}",
-        f"TimeLimitSteps: {config.time_limit_steps}",
-        f"TasksPerAgentPerHour: {format_number(config.tasks_per_agent_per_hour)}",
+        f"CapacityModel: {config.capacity_model}",
+        f"CapacityStepsPerTask: {format_number(config.capacity_steps_per_task)}",
+        f"SetAssignmentPolicy: {config.set_assignment_policy}",
+        f"MaxOpenTasksOnShelves: {config.max_open_tasks_on_shelves}",
         "",
         f"Influx: {config.influx}",
-        f"LambdaPerHour: {format_number(config.lambda_per_hour)}",
+        f"Lambda: {format_number(config.lambda_value)}",
         f"BurstAmount: {config.burst_amount}",
         f"BurstStartStep: {config.burst_start_step}",
         f"BurstDurationSteps: {config.burst_duration_steps}",
@@ -116,29 +116,25 @@ def generate_tasks(
 
             if len(active_open_tasks) >= config.max_open_tasks_on_shelves:
                 release_time = active_open_tasks[0]
-                if release_time >= config.time_limit_steps:
-                    raise ValueError(
-                        "The selected workload exceeds MaxOpenTasksOnShelves within the time horizon. "
-                        "Reduce the number of tasks or increase the maximum simulation time."
-                    )
                 continue
 
+            reachable_descriptors = [
+                descriptor
+                for descriptor in layout.shelf_descriptors
+                if layout.distances_by_agent[agent_id][descriptor.shelf_index] is not None
+            ]
             available_shelves = [
                 descriptor.shelf_index
-                for descriptor in layout.shelf_descriptors
+                for descriptor in reachable_descriptors
                 if shelf_release_times[descriptor.shelf_index] <= release_time
-                and layout.distances_by_agent[agent_id][descriptor.shelf_index] is not None
             ]
 
             if available_shelves:
                 break
 
-            release_time = min(shelf_release_times)
-            if release_time >= config.time_limit_steps:
-                raise ValueError(
-                    "The selected workload does not fit within the time horizon while preserving one active task per shelf. "
-                    "Reduce the number of tasks or increase the maximum simulation time."
-                )
+            if not reachable_descriptors:
+                raise ValueError(f"No shelves are reachable from agent {agent_id}'s home station.")
+            release_time = min(shelf_release_times[descriptor.shelf_index] for descriptor in reachable_descriptors)
 
         shelf_index = weighted_choice(available_shelves, spatial_weights, rng)
         distance_to_pickup = layout.distances_by_agent[agent_id][shelf_index]
@@ -148,10 +144,7 @@ def generate_tasks(
         predicted_start = max(release_time, agent_available_times[agent_id])
         predicted_pickup_time = predicted_start + distance_to_pickup
         base_service_time = distance_to_pickup * 2
-        deadline = min(
-            config.time_limit_steps,
-            release_time + max(1, math.ceil(base_service_time * (1.0 + config.deadline_slack))),
-        )
+        deadline = release_time + max(1, math.ceil(base_service_time * (1.0 + config.deadline_slack)))
         last_release_time = release_time
 
         tasks.append(
@@ -195,19 +188,14 @@ def build_scenario_config(
         layout_id=layout_id,
         agents=batch.agents,
         task_count=batch.task_count,
-        duration_seconds=batch.duration_seconds,
-        step_seconds=batch.step_seconds,
-        tasks_per_agent_per_hour=batch.tasks_per_agent_per_hour,
         capacity_model=DEFAULT_CAPACITY_MODEL,
-        capacity_reserve=batch.capacity_reserve,
         capacity_steps_per_task=batch.capacity_steps_per_task,
-        load_factor=batch.load_factor,
         influx=influx,
         spatial_distribution=spatial_distribution,
         seed=batch.seed,
         scenario_id=scenario_id,
         output_path=batch.scenario_directory / f"{file_index}.txt",
-        lambda_per_hour=batch.lambda_per_hour,
+        lambda_value=batch.lambda_value,
         burst_amount=batch.burst_amount,
         burst_start_step=batch.burst_start_step,
         burst_duration_steps=batch.burst_duration_steps,
