@@ -745,6 +745,17 @@ def validate_scenario_metadata(
             f"Scenario allows {max_open_tasks} open shelf tasks, but layout contains only {warehouse.shelf_count} shelves."
         )
 
+    invalid_task = next(
+        (task for task in definition.tasks if task.shelf_index < 0 or task.shelf_index >= warehouse.shelf_count),
+        None,
+    )
+    if invalid_task is not None:
+        raise ValueError(
+            f"Scenario task {invalid_task.task_id} references shelf index {invalid_task.shelf_index}, "
+            f"but the selected layout exposes only {warehouse.shelf_count} shelves. "
+            "This scenario was likely generated for an older warehouse profile and should be regenerated."
+        )
+
 
 def build_debug_frames_dir(scenario_path: Path) -> Path:
     return DEFAULT_DEBUG_FRAMES_ROOT / scenario_path.stem

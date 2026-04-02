@@ -51,6 +51,11 @@ The layout size is selected automatically from the number of agents:
 - `21-60` agents -> `medium`
 - `61-132` agents -> `large`
 
+The built-in warehouse profiles currently expose:
+- `small`: `20` stations, `120` shelves
+- `medium`: `60` stations, `360` shelves
+- `large`: `132` stations, `792` shelves
+
 The generator creates a dedicated folder in `public/scenarios/`:
 `public/scenarios/<agents>-<tasks>-<size>-<seed>/`
 
