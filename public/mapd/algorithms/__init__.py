@@ -10,6 +10,13 @@ def normalize_algorithm_name(name: str) -> str:
         return "BFS"
     if key in ("a", "a*", "astar"):
         return "A*"
+    if key in (
+        "whca",
+        "whca*",
+        "windowedhierarchicalcooperativea*",
+        "windowedhierarchicalcooperativeastar",
+    ):
+        return "WHCA*"
     if key in ("sipp", "safeinterval", "safeintervalpathplanning", "dijkstra", "dijkstras"):
         return "SIPP"
     raise ValueError(f"Unsupported pathfinding algorithm: {name}")

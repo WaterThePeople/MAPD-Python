@@ -2,6 +2,7 @@ import colorsys
 import heapq
 import time
 from collections import defaultdict
+from dataclasses import dataclass, field
 from functools import lru_cache
 
 from mapd.algorithms import get_algorithm, normalize_algorithm_name
@@ -13,6 +14,19 @@ from mapd.warehouse import WarehouseMap
 
 SOFT_COLLISION_PENALTY = 1000
 MAX_PLANNING_ORDER_ATTEMPTS = 10
+WHCA_WINDOW_SIZE = 16
+WHCA_MAX_TIME_FACTOR = 12
+WHCA_MIN_STALL_WINDOWS = 10
+
+
+@dataclass
+class WindowAgentProgress:
+    path: list[Coord]
+    task_index: int = 0
+    carrying: bool = False
+    pickup_times: dict[int, int] = field(default_factory=dict)
+    completion_times: dict[int, int] = field(default_factory=dict)
+    missed_deadlines: list[int] = field(default_factory=list)
 
 
 class ReservationTable:
@@ -67,6 +81,17 @@ def descending_coord_priority(warehouse: WarehouseMap, coord: Coord) -> int:
     # On this warehouse family, preferring later-index cells on equal f-costs
     # keeps the heuristic search from over-occupying the upper station lanes.
     return -warehouse.coord_to_index(coord)
+
+
+def is_windowed_algorithm(algorithm: str) -> bool:
+    return normalize_algorithm_name(algorithm) == "WHCA*"
+
+
+def low_level_algorithm_name(algorithm: str) -> str:
+    canonical = normalize_algorithm_name(algorithm)
+    if canonical in {"SIPP", "WHCA*"}:
+        return "A*"
+    return canonical
 
 
 def find_path(
@@ -269,8 +294,32 @@ def wait_until_time(
 
     start = path[-1]
     start_time = len(path) - 1
+    wait_path = find_wait_path(
+        warehouse,
+        reservations,
+        start,
+        start_time,
+        target_time,
+        algorithm,
+        blocked_cells=blocked_cells,
+    )
+    return merge_segments(path, wait_path)
+
+
+def find_wait_path(
+    warehouse: WarehouseMap,
+    reservations: ReservationTable,
+    start: Coord,
+    start_time: int,
+    target_time: int,
+    algorithm: str,
+    blocked_cells: set[Coord] | None = None,
+) -> list[Coord]:
+    if blocked_cells is None:
+        blocked_cells = set()
+
     if start_time >= target_time:
-        return path
+        return [start]
 
     can_wait = True
     for time in range(start_time + 1, target_time + 1):
@@ -279,11 +328,9 @@ def wait_until_time(
             break
 
     if can_wait:
-        while len(path) - 1 < target_time:
-            path.append(path[-1])
-        return path
+        return [start] * (target_time - start_time + 1)
 
-    search_algorithm = "A*" if normalize_algorithm_name(algorithm) == "SIPP" else algorithm
+    search_algorithm = low_level_algorithm_name(algorithm)
     search = get_algorithm(search_algorithm)
 
     def neighbors(state: tuple[Coord, int]) -> list[tuple[Coord, int]]:
@@ -322,8 +369,7 @@ def wait_until_time(
             f"to time {target_time} using {search.name}."
         ) from exc
 
-    wait_path = [coord for coord, _ in states]
-    return merge_segments(path, wait_path)
+    return [coord for coord, _ in states]
 
 
 def assign_home_stations(warehouse: WarehouseMap, agent_count: int) -> dict[int, Coord]:
@@ -349,7 +395,7 @@ def shortest_distance(
     if not goals:
         raise RuntimeError("Could not find a static path because no goal cells were available.")
 
-    search_algorithm = "A*" if normalize_algorithm_name(algorithm) == "SIPP" else algorithm
+    search_algorithm = low_level_algorithm_name(algorithm)
     search = get_algorithm(search_algorithm)
     problem = SearchProblem(
         start=start,
@@ -1062,6 +1108,319 @@ def build_agent_plans_once(
     return [plans_by_id[agent_id] for agent_id in sorted(plans_by_id)]
 
 
+def truncate_path_to_steps(path: list[Coord], max_steps: int) -> list[Coord]:
+    if not path:
+        return []
+    if max_steps <= 0 or len(path) == 1:
+        return [path[0]]
+    return path[: min(len(path), max_steps + 1)]
+
+
+def trim_trailing_waits(path: list[Coord]) -> list[Coord]:
+    trimmed = path[:]
+    while len(trimmed) > 1 and trimmed[-1] == trimmed[-2]:
+        trimmed.pop()
+    return trimmed
+
+
+def build_window_reservations(
+    progress_by_id: dict[int, WindowAgentProgress],
+    *,
+    exclude_agent_id: int | None = None,
+) -> ReservationTable:
+    reservations = ReservationTable()
+    for agent_id in sorted(progress_by_id):
+        if agent_id == exclude_agent_id:
+            continue
+        reservations.reserve_path(progress_by_id[agent_id].path, permanent_final=False)
+    return reservations
+
+
+def all_window_agents_done(
+    progress_by_id: dict[int, WindowAgentProgress],
+    tasks_by_agent: dict[int, list[Task]],
+) -> bool:
+    return all(
+        not progress.carrying and progress.task_index >= len(tasks_by_agent[agent_id])
+        for agent_id, progress in progress_by_id.items()
+    )
+
+
+def whca_time_limit(
+    warehouse: WarehouseMap,
+    tasks_by_agent: dict[int, list[Task]],
+) -> int:
+    latest_release = max(
+        (task.release_time for agent_tasks in tasks_by_agent.values() for task in agent_tasks),
+        default=0,
+    )
+    task_count = sum(len(agent_tasks) for agent_tasks in tasks_by_agent.values())
+    return latest_release + warehouse.cell_count * WHCA_MAX_TIME_FACTOR + max(1, task_count) * WHCA_WINDOW_SIZE * 4
+
+
+def whca_stall_window_limit(warehouse: WarehouseMap) -> int:
+    window_span = max(1, WHCA_WINDOW_SIZE * 2)
+    return max(WHCA_MIN_STALL_WINDOWS, (warehouse.cell_count + window_span - 1) // window_span)
+
+
+def whca_progress_signature(progress_by_id: dict[int, WindowAgentProgress]) -> tuple[tuple[int, bool], ...]:
+    return tuple(
+        (progress.task_index, progress.carrying)
+        for _, progress in sorted(progress_by_id.items())
+    )
+
+
+def whca_waits_for_future_release(
+    progress_by_id: dict[int, WindowAgentProgress],
+    tasks_by_agent: dict[int, list[Task]],
+    current_time: int,
+) -> bool:
+    for agent_id, progress in progress_by_id.items():
+        if progress.carrying:
+            continue
+        agent_tasks = tasks_by_agent[agent_id]
+        if progress.task_index >= len(agent_tasks):
+            continue
+        if agent_tasks[progress.task_index].release_time > current_time:
+            return True
+    return False
+
+
+def window_path_search(
+    warehouse: WarehouseMap,
+    reservations: ReservationTable,
+    start: Coord,
+    start_time: int,
+    goals: set[Coord],
+    algorithm: str,
+    blocked_cells: set[Coord],
+    *,
+    allow_soft_collisions: bool,
+    goal_available_after: dict[Coord, int] | None = None,
+    soft_max_expansions: int | None = None,
+    deadline: float | None = None,
+) -> list[Coord]:
+    if allow_soft_collisions:
+        return find_soft_path(
+            warehouse,
+            reservations,
+            start,
+            start_time,
+            goals,
+            blocked_cells=blocked_cells,
+            goal_available_after=goal_available_after,
+            max_expansions=soft_max_expansions,
+            deadline=deadline,
+        )
+
+    return find_path(
+        warehouse,
+        reservations,
+        start,
+        start_time,
+        goals,
+        low_level_algorithm_name(algorithm),
+        blocked_cells=blocked_cells,
+        goal_available_after=goal_available_after,
+    )
+
+
+def extend_windowed_agent_progress(
+    warehouse: WarehouseMap,
+    reservations: ReservationTable,
+    progress: WindowAgentProgress,
+    home: Coord,
+    agent_tasks: list[Task],
+    station_mode: str,
+    algorithm: str,
+    blocked_cells: set[Coord],
+    *,
+    allow_soft_collisions: bool = False,
+    soft_max_expansions: int | None = None,
+    deadline: float | None = None,
+    window_size: int = WHCA_WINDOW_SIZE,
+) -> None:
+    base_time = len(progress.path) - 1
+    window_end = base_time + window_size
+    segment = [progress.path[-1]]
+    current = segment[-1]
+    current_time = base_time
+
+    while current_time < window_end:
+        if deadline is not None and time.perf_counter() >= deadline:
+            raise RuntimeError("WHCA* planning exceeded the time budget.")
+
+        if progress.carrying:
+            task = agent_tasks[progress.task_index]
+            return_goals = {home} if station_mode == "Set" else set(warehouse.stations)
+            full_path = window_path_search(
+                warehouse,
+                reservations,
+                current,
+                current_time,
+                return_goals,
+                algorithm,
+                blocked_cells,
+                allow_soft_collisions=allow_soft_collisions,
+                soft_max_expansions=soft_max_expansions,
+                deadline=deadline,
+            )
+            prefix = truncate_path_to_steps(full_path, window_end - current_time)
+            segment = merge_segments(segment, prefix)
+            current = segment[-1]
+            current_time = base_time + len(segment) - 1
+            if len(prefix) != len(full_path):
+                break
+
+            progress.completion_times[task.task_id] = current_time
+            if task.deadline is not None and current_time > task.deadline:
+                progress.missed_deadlines.append(task.task_id)
+            progress.carrying = False
+            progress.task_index += 1
+            continue
+
+        if progress.task_index >= len(agent_tasks):
+            break
+
+        task = agent_tasks[progress.task_index]
+        if current_time < task.release_time:
+            wait_target_time = min(window_end, task.release_time)
+            wait_path = find_wait_path(
+                warehouse,
+                reservations,
+                current,
+                current_time,
+                wait_target_time,
+                algorithm,
+                blocked_cells=blocked_cells,
+            )
+            segment = merge_segments(segment, wait_path)
+            current = segment[-1]
+            current_time = base_time + len(segment) - 1
+            if current_time < task.release_time:
+                break
+            continue
+
+        pickup_goals = warehouse.pickup_positions(task.shelf_index)
+        full_path = window_path_search(
+            warehouse,
+            reservations,
+            current,
+            current_time,
+            pickup_goals,
+            algorithm,
+            blocked_cells,
+            allow_soft_collisions=allow_soft_collisions,
+            soft_max_expansions=soft_max_expansions,
+            deadline=deadline,
+        )
+        prefix = truncate_path_to_steps(full_path, window_end - current_time)
+        segment = merge_segments(segment, prefix)
+        current = segment[-1]
+        current_time = base_time + len(segment) - 1
+        if len(prefix) != len(full_path):
+            break
+
+        progress.pickup_times[task.task_id] = current_time
+        progress.carrying = True
+
+    if current_time < window_end:
+        wait_path = find_wait_path(
+            warehouse,
+            reservations,
+            current,
+            current_time,
+            window_end,
+            algorithm,
+            blocked_cells=blocked_cells,
+        )
+        segment = merge_segments(segment, wait_path)
+
+    progress.path = merge_segments(progress.path, segment)
+
+
+def build_whca_agent_plans_once(
+    warehouse: WarehouseMap,
+    tasks_by_agent: dict[int, list[Task]],
+    homes: dict[int, Coord],
+    colors: list[tuple[int, int, int]],
+    planning_order: list[int],
+    station_mode: str,
+    algorithm: str,
+    *,
+    allow_soft_collisions: bool = False,
+    soft_max_expansions: int | None = None,
+    deadline: float | None = None,
+) -> list[AgentPlan]:
+    progress_by_id = {
+        agent_id: WindowAgentProgress(path=[homes[agent_id]])
+        for agent_id in sorted(tasks_by_agent)
+    }
+    time_limit = whca_time_limit(warehouse, tasks_by_agent)
+    stall_window_limit = whca_stall_window_limit(warehouse)
+    stalled_windows = 0
+
+    while not all_window_agents_done(progress_by_id, tasks_by_agent):
+        if deadline is not None and time.perf_counter() >= deadline:
+            raise RuntimeError("WHCA* planning exceeded the time budget.")
+
+        current_time = len(progress_by_id[planning_order[0]].path) - 1 if planning_order else 0
+        if current_time > time_limit:
+            raise RuntimeError("WHCA* exceeded the rolling-horizon time limit.")
+
+        signature_before = whca_progress_signature(progress_by_id)
+        for agent_id in planning_order:
+            reservations = build_window_reservations(progress_by_id, exclude_agent_id=agent_id)
+            extend_windowed_agent_progress(
+                warehouse=warehouse,
+                reservations=reservations,
+                progress=progress_by_id[agent_id],
+                home=homes[agent_id],
+                agent_tasks=tasks_by_agent[agent_id],
+                station_mode=station_mode,
+                algorithm=algorithm,
+                blocked_cells=set(),
+                allow_soft_collisions=allow_soft_collisions,
+                soft_max_expansions=soft_max_expansions,
+                deadline=deadline,
+            )
+
+        current_time = len(progress_by_id[planning_order[0]].path) - 1 if planning_order else current_time
+        signature_after = whca_progress_signature(progress_by_id)
+        if signature_after != signature_before:
+            stalled_windows = 0
+            continue
+
+        if whca_waits_for_future_release(progress_by_id, tasks_by_agent, current_time):
+            stalled_windows = 0
+            continue
+
+        stalled_windows += 1
+        if stalled_windows >= stall_window_limit:
+            raise RuntimeError(
+                "WHCA* stalled without task progress. "
+                f"No pickup or delivery progress was made for {stalled_windows} consecutive windows."
+            )
+
+    plans = []
+    for agent_id in sorted(progress_by_id):
+        progress = progress_by_id[agent_id]
+        plans.append(
+            AgentPlan(
+                agent_id=agent_id,
+                color=colors[agent_id],
+                home=homes[agent_id],
+                home_index=warehouse.coord_to_index(homes[agent_id]),
+                path=trim_trailing_waits(progress.path),
+                tasks=tasks_by_agent[agent_id],
+                pickup_times=progress.pickup_times,
+                completion_times=progress.completion_times,
+                missed_deadlines=progress.missed_deadlines,
+            )
+        )
+    return plans
+
+
 def build_agent_plans(
     warehouse: WarehouseMap,
     agent_count: int,
@@ -1083,12 +1442,23 @@ def build_agent_plans(
         algorithm,
     )
     planning_orders = build_planning_orders(warehouse, tasks_by_agent, homes, station_mode, algorithm)
+    use_whca = is_windowed_algorithm(algorithm)
 
     last_error: RuntimeError | None = None
     for attempt_index, planning_order in enumerate(planning_orders):
         if attempt_index > 0 and stats is not None:
             stats.note_replan()
         try:
+            if use_whca:
+                return build_whca_agent_plans_once(
+                    warehouse,
+                    tasks_by_agent,
+                    homes,
+                    colors,
+                    planning_order,
+                    station_mode,
+                    algorithm,
+                )
             return build_agent_plans_once(
                 warehouse,
                 tasks_by_agent,
@@ -1136,6 +1506,7 @@ def build_relaxed_agent_plans(
     planning_orders = build_planning_orders(warehouse, tasks_by_agent, homes, station_mode, algorithm)
     if max_order_attempts is not None:
         planning_orders = planning_orders[: max(1, max_order_attempts)]
+    use_whca = is_windowed_algorithm(algorithm)
     deadline = None
     if time_budget_seconds is not None:
         deadline = time.perf_counter() + max(0.0, time_budget_seconds)
@@ -1151,20 +1522,34 @@ def build_relaxed_agent_plans(
             last_error = RuntimeError("Fallback planning exceeded the time budget.")
             break
         try:
-            plans = build_agent_plans_once(
-                warehouse,
-                tasks_by_agent,
-                homes,
-                station_cells,
-                colors,
-                planning_order,
-                station_mode,
-                algorithm,
-                allow_soft_collisions=True,
-                soft_max_expansions=soft_max_expansions,
-                deadline=deadline,
-                stats=stats,
-            )
+            if use_whca:
+                plans = build_whca_agent_plans_once(
+                    warehouse,
+                    tasks_by_agent,
+                    homes,
+                    colors,
+                    planning_order,
+                    station_mode,
+                    algorithm,
+                    allow_soft_collisions=True,
+                    soft_max_expansions=soft_max_expansions,
+                    deadline=deadline,
+                )
+            else:
+                plans = build_agent_plans_once(
+                    warehouse,
+                    tasks_by_agent,
+                    homes,
+                    station_cells,
+                    colors,
+                    planning_order,
+                    station_mode,
+                    algorithm,
+                    allow_soft_collisions=True,
+                    soft_max_expansions=soft_max_expansions,
+                    deadline=deadline,
+                    stats=stats,
+                )
         except RuntimeError as exc:
             last_error = exc
             continue

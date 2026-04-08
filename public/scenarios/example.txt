@@ -8,7 +8,7 @@ Type: [Square, Hexagon, Triangle]
 Mode: [Set,Available]
 Station: [Set,Available]
 Strategy: [FCFS,Robin,GreedyCost]
-Algorithm: [A*,SIPP,BFS]
+Algorithm: [WHCA*,SIPP,BFS]
 
 Agents: 5
 Tasks: 10

@@ -3,7 +3,7 @@ import re
 import os
 import sys
 import time
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -31,6 +31,7 @@ from mapd.report_metrics import (
     format_duration,
     layout_size_label,
     missed_deadline_count,
+    missed_deadline_time_sum,
     mode_label,
     status_label,
     strategy_label,
@@ -71,7 +72,7 @@ STATUS_IMPOSSIBLE = "Impossible"
 LAYOUT_TYPE_CHOICES = ["square", "hexagon", "triangle"]
 MODE_CHOICES = ["Set", "Available"]
 STRATEGY_CHOICES = ["FCFS", "Robin", "GreedyCost", "None"]
-ALGORITHM_CHOICES = ["A*", "SIPP", "BFS"]
+ALGORITHM_CHOICES = ["WHCA*", "SIPP", "BFS"]
 SUITE_ONLY_ALLOWED_FLAGS = {
     "--gif",
     "--jobs",
@@ -380,6 +381,7 @@ def variant_filename_token(value: str) -> str:
         "GreedyCost": "greedycost",
         "None": "none",
         "A*": "astar",
+        "WHCA*": "whca",
         "SIPP": "sipp",
         "BFS": "bfs",
     }
@@ -702,10 +704,13 @@ def variant_result_summary(
         parts.append(f"collisions={result.collisions}")
 
     missed = missed_deadline_count(result.plans)
+    missed_time = missed_deadline_time_sum(result.plans)
     waits = wait_step_count(result.plans, station_cells)
     distance = distance_step_sum(result.plans)
     if missed is not None:
         parts.append(f"missed deadlines={missed}")
+    if missed_time is not None:
+        parts.append(f"missed deadline time={missed_time}")
     if waits is not None:
         parts.append(f"waits={waits}")
     if distance is not None:
@@ -946,19 +951,31 @@ def execute_suite_tasks(tasks: list[SuiteVariantTask], worker_count: int) -> lis
         return [outcome for outcome in outcomes if outcome is not None]
 
     print(f"[suite] Running {len(tasks)} variants with {worker_count} workers.")
+    executor: ProcessPoolExecutor | None = None
     try:
-        with ProcessPoolExecutor(max_workers=worker_count) as executor:
-            future_to_task = {
-                executor.submit(run_suite_variant_task, task): task
-                for task in tasks
-            }
-            for future in as_completed(future_to_task):
-                task = future_to_task[future]
+        executor = ProcessPoolExecutor(max_workers=worker_count)
+        task_iter = iter(tasks)
+        max_in_flight = min(len(tasks), max(worker_count, worker_count * 2))
+        future_to_task = {}
+
+        for _ in range(max_in_flight):
+            try:
+                task = next(task_iter)
+            except StopIteration:
+                break
+            future_to_task[executor.submit(run_suite_variant_task, task)] = task
+
+        while future_to_task:
+            completed, _ = wait(tuple(future_to_task), return_when=FIRST_COMPLETED)
+            for future in completed:
+                task = future_to_task.pop(future)
                 try:
                     outcome = future.result()
                 except Exception as exc:
-                    for pending in future_to_task:
+                    for pending in tuple(future_to_task):
                         pending.cancel()
+                    executor.shutdown(wait=False, cancel_futures=True)
+                    executor = None
                     raise RuntimeError(
                         "Suite worker failed for "
                         + variant_description(
@@ -976,9 +993,18 @@ def execute_suite_tasks(tasks: list[SuiteVariantTask], worker_count: int) -> lis
                 outcomes[outcome.index - 1] = outcome
                 print(outcome.header)
                 print("  " + outcome.summary)
+
+                try:
+                    next_task = next(task_iter)
+                except StopIteration:
+                    continue
+                future_to_task[executor.submit(run_suite_variant_task, next_task)] = next_task
     except PermissionError:
         print("[suite] Parallel workers are unavailable in this environment, falling back to serial execution.")
         return execute_suite_tasks(tasks, 1)
+    finally:
+        if executor is not None:
+            executor.shutdown(wait=True, cancel_futures=False)
 
     return [outcome for outcome in outcomes if outcome is not None]
 

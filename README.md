@@ -32,7 +32,7 @@ python public/main.py --suite 20-120-small-280713582 --type square --mode Set --
 python public/main.py --scenario example.txt --layout 0 --mode Available --station Available --strategy FCFS --algorithm BFS --type square --gif --debugging
 
 # Launches the simulator with custom parameters and returns a .gif file, even when collisions are present.
-python public/main.py --scenario example.txt --layout 0 --mode Set --station Set --algorithm A* --type square --gif --fallback-gif
+python public/main.py --scenario example.txt --layout 0 --mode Set --station Set --algorithm WHCA* --type square --gif --fallback-gif
 ```
 
 ## Scenario generator

@@ -34,6 +34,22 @@ def missed_deadline_count(plans: list[AgentPlan] | None) -> int | None:
     return sum(len(plan.missed_deadlines) for plan in plans)
 
 
+def missed_deadline_time_sum(plans: list[AgentPlan] | None) -> int | None:
+    if plans is None:
+        return None
+
+    total_delay = 0
+    for plan in plans:
+        for task in plan.tasks:
+            if task.deadline is None:
+                continue
+            completion_time = plan.completion_times.get(task.task_id)
+            if completion_time is None or completion_time <= task.deadline:
+                continue
+            total_delay += completion_time - task.deadline
+    return total_delay
+
+
 def wait_step_count(plans: list[AgentPlan] | None, station_cells: set[Coord]) -> int | None:
     if plans is None:
         return None

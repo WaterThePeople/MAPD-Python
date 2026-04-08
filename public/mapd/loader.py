@@ -485,6 +485,7 @@ def load_scenario_definition(path: Path) -> ScenarioDefinition:
     strategies = _parse_choices(strategy_value, _normalize_strategy)
     if algorithm_value is not None:
         algorithms = _parse_choices(algorithm_value, normalize_algorithm_name)
+        algorithms = ["WHCA*" if algorithm == "A*" else algorithm for algorithm in algorithms]
     else:
         algorithms = ["BFS"]
     if type_value is not None:
@@ -595,6 +596,8 @@ def resolve_scenario_variant(
         raise ValueError(f"Station mode '{resolved_station}' is not allowed by this scenario.")
 
     resolved_algorithm = normalize_algorithm_name(algorithm) if algorithm is not None else definition.algorithms[0]
+    if resolved_algorithm == "A*":
+        resolved_algorithm = "WHCA*"
     if resolved_algorithm not in definition.algorithms:
         raise ValueError(f"Algorithm '{resolved_algorithm}' is not allowed by this scenario.")
 

@@ -6,7 +6,7 @@ from dataclasses import dataclass
 DEFAULT_MODE_CHOICES = ["Set", "Available"]
 DEFAULT_STATION_CHOICES = ["Set", "Available"]
 DEFAULT_STRATEGY_CHOICES = ["FCFS", "Robin", "GreedyCost"]
-DEFAULT_ALGORITHM_CHOICES = ["A*", "SIPP", "BFS"]
+DEFAULT_ALGORITHM_CHOICES = ["WHCA*", "SIPP", "BFS"]
 DEFAULT_TYPE_CHOICES = ["Square", "Hexagon", "Triangle"]
 DEFAULT_HOTSPOT_SHELF_SHARE = 0.10
 DEFAULT_HOTSPOT_TASK_SHARE = 0.70
