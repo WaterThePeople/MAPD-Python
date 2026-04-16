@@ -9,6 +9,7 @@ Mode: [Set,Available]
 Station: [Set,Available]
 Strategy: [FCFS,Robin,GreedyCost]
 Algorithm: [WHCA*,SIPP,BFS]
+FailureModel: [None, AgentDelay]
 
 Agents: 5
 Tasks: 10
@@ -34,6 +35,11 @@ DeadlineSlackPolicy: DensityBased
 DeadlineSlack: 0.20
 
 MaxReplans: 5
+
+FailureProbability: 0.01%
+FailureDurationMin: 5
+FailureDurationMax: 20
+FailureSeed: 123456
 
 Task Agent Shelf Time Deadline
 1 0 20 0 60

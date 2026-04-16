@@ -74,6 +74,8 @@ def draw_header_stats(
     total_tasks: int,
     missed_count: int,
     collision_count: int,
+    failure_count: int,
+    failure_duration: int,
     font,
 ) -> None:
     segments = [
@@ -81,6 +83,8 @@ def draw_header_stats(
         (f"Done: {done_count}/{total_tasks}", (30, 30, 30)),
         (f"Missed deadlines: {missed_count}", (180, 40, 40) if missed_count else (30, 30, 30)),
         (f"Collisions: {collision_count}", (180, 40, 40) if collision_count else (30, 30, 30)),
+        (f"Failures: {failure_count}", (180, 40, 40) if failure_count else (30, 30, 30)),
+        (f"Failure time: {failure_duration}", (180, 40, 40) if failure_duration else (30, 30, 30)),
     ]
 
     x = 8
@@ -106,6 +110,8 @@ def draw_agent(
     color: tuple[int, int, int],
     label: str | None,
     font,
+    *,
+    delayed: bool = False,
 ) -> None:
     left, top, right, bottom = bounds
     size = min(right - left, bottom - top)
@@ -114,7 +120,24 @@ def draw_agent(
     max_padding = max(1, int(size / 2) - 1)
     padding = min(max(1, int(size // 6)), max_padding)
     circle_bounds = (left + padding, top + padding, right - padding, bottom - padding)
-    draw.ellipse(circle_bounds, fill=color, outline=(20, 20, 20), width=scaled_stroke_width(size, 10))
+    outline = (220, 20, 20) if delayed else (20, 20, 20)
+    outline_width = scaled_stroke_width(size, 8 if delayed else 10)
+    draw.ellipse(circle_bounds, fill=color, outline=outline, width=outline_width)
+    if delayed:
+        badge_radius = max(2, int(size * 0.12))
+        badge_center_x = int(right - padding - badge_radius)
+        badge_center_y = int(top + padding + badge_radius)
+        draw.ellipse(
+            (
+                badge_center_x - badge_radius,
+                badge_center_y - badge_radius,
+                badge_center_x + badge_radius,
+                badge_center_y + badge_radius,
+            ),
+            fill=(220, 20, 20),
+            outline=(255, 255, 255),
+            width=1,
+        )
     if label and size >= 14:
         draw_centered_text(draw, (left, top, right, bottom), label, (255, 255, 255), font)
 
@@ -142,6 +165,41 @@ def build_task_maps(
             tasks_by_coord[warehouse.shelf_index_to_coord(task.shelf_index)].append(task)
 
     return package_pickups, package_release_times, package_deadlines, tasks_by_coord
+
+
+def count_failure_events(plan: AgentPlan, *, up_to_time: int | None = None) -> int:
+    if plan.failure_start_times:
+        if up_to_time is None:
+            return len(plan.failure_start_times)
+        return sum(1 for time in plan.failure_start_times if time <= up_to_time)
+
+    if up_to_time is None:
+        relevant_times = sorted(plan.delayed_times)
+    else:
+        relevant_times = sorted(time for time in plan.delayed_times if time <= up_to_time)
+
+    if not relevant_times:
+        return 0
+
+    events = 1
+    previous = relevant_times[0]
+    for current in relevant_times[1:]:
+        if current != previous + 1:
+            events += 1
+        previous = current
+    return events
+
+
+def total_failure_stats(plans: list[AgentPlan], *, up_to_time: int | None = None) -> tuple[int, int]:
+    failure_count = 0
+    failure_duration = 0
+    for plan in plans:
+        failure_count += count_failure_events(plan, up_to_time=up_to_time)
+        if up_to_time is None:
+            failure_duration += len(plan.delayed_times)
+        else:
+            failure_duration += sum(1 for time in plan.delayed_times if time <= up_to_time)
+    return failure_count, failure_duration
 
 
 def carried_task_id(plan: AgentPlan, time: int) -> str | None:
@@ -470,6 +528,7 @@ def render_frames(
         collision_info = frame_collision_info(plans, time)
         collision_coords = collision_info.coords
         cumulative_collisions += collision_info.pair_count
+        current_failure_count, current_failure_duration = total_failure_stats(plans, up_to_time=time)
 
         draw.rectangle((0, 0, board_width, header_height), fill=header_bg, outline=header_border, width=1)
 
@@ -494,6 +553,8 @@ def render_frames(
             total_tasks,
             missed_count,
             cumulative_collisions,
+            current_failure_count,
+            current_failure_duration,
             font,
         )
 
@@ -519,6 +580,7 @@ def render_frames(
                 plan.color,
                 label,
                 font,
+                delayed=time in plan.delayed_times,
             )
 
         for coord in collision_coords:

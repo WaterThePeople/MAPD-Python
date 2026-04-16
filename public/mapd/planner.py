@@ -542,6 +542,43 @@ def reserve_initial_positions(
         reservations.latest_time = max(reservations.latest_time, first_release)
 
 
+def reserve_state_positions(
+    reservations: ReservationTable,
+    start_positions: dict[int, Coord],
+    pending_agent_ids: set[int],
+    hold_untils: dict[int, int] | None = None,
+    *,
+    exclude_agent_id: int | None = None,
+) -> None:
+    if hold_untils is None:
+        hold_untils = {}
+    for agent_id in pending_agent_ids:
+        if agent_id == exclude_agent_id:
+            continue
+        hold_until = max(0, hold_untils.get(agent_id, 0))
+        for time in range(hold_until + 1):
+            reservations.vertex[time].add(start_positions[agent_id])
+        reservations.latest_time = max(reservations.latest_time, hold_until)
+    if pending_agent_ids:
+        reservations.latest_time = max(reservations.latest_time, 0)
+
+
+def reserve_forced_waits(
+    reservations: ReservationTable,
+    start_positions: dict[int, Coord],
+    forced_waits: dict[int, int],
+    *,
+    exclude_agent_id: int | None = None,
+) -> None:
+    for agent_id, duration in forced_waits.items():
+        if agent_id == exclude_agent_id or duration <= 0:
+            continue
+        coord = start_positions[agent_id]
+        for time in range(1, duration + 1):
+            reservations.vertex[time].add(coord)
+        reservations.latest_time = max(reservations.latest_time, duration)
+
+
 def estimate_finish_times(
     warehouse: WarehouseMap,
     tasks_by_agent: dict[int, list[Task]],
@@ -729,6 +766,46 @@ def build_reservations(
     return reservations
 
 
+def build_reservations_from_state(
+    start_positions: dict[int, Coord],
+    hold_untils: dict[int, int],
+    forced_waits: dict[int, int],
+    plans_by_id: dict[int, AgentPlan],
+    pending_agent_ids: set[int],
+    station_cells: set[Coord],
+    *,
+    permanent_station_agents: set[int] | None = None,
+    exclude_agent_id: int | None = None,
+) -> ReservationTable:
+    reservations = ReservationTable()
+    if pending_agent_ids:
+        reserve_state_positions(
+            reservations,
+            start_positions,
+            pending_agent_ids,
+            hold_untils,
+            exclude_agent_id=exclude_agent_id,
+        )
+    reserve_forced_waits(
+        reservations,
+        start_positions,
+        forced_waits,
+        exclude_agent_id=exclude_agent_id,
+    )
+    if permanent_station_agents is None:
+        permanent_station_agents = set()
+    for agent_id in permanent_station_agents:
+        if agent_id == exclude_agent_id:
+            continue
+        coord = start_positions[agent_id]
+        if coord in station_cells:
+            existing = reservations.permanent.get(coord)
+            reservations.permanent[coord] = 0 if existing is None else min(existing, 0)
+    for agent_id in sorted(plans_by_id):
+        reserve_agent_plan(reservations, plans_by_id[agent_id], station_cells)
+    return reservations
+
+
 def build_agent_plan(
     warehouse: WarehouseMap,
     reservations: ReservationTable,
@@ -817,6 +894,154 @@ def build_agent_plan(
         pickup_times=pickup_times,
         completion_times=completion_times,
         missed_deadlines=missed_deadlines,
+    )
+
+
+def build_agent_plan_from_state(
+    warehouse: WarehouseMap,
+    reservations: ReservationTable,
+    agent_id: int,
+    start: Coord,
+    home: Coord,
+    home_index: int,
+    color: tuple[int, int, int],
+    agent_tasks: list[Task],
+    *,
+    carrying: bool,
+    initial_wait: int,
+    mark_failure_start: bool,
+    absolute_start_time: int,
+    station_mode: str,
+    algorithm: str,
+    blocked_cells: set[Coord],
+) -> AgentPlan:
+    return_goals_default = {home} if station_mode == "Set" else set(warehouse.stations)
+
+    current = start
+    current_time = 0
+    path = [start]
+    pickup_times: dict[int, int] = {}
+    completion_times: dict[int, int] = {}
+    missed_deadlines: list[int] = []
+    delayed_times: set[int] = set()
+    failure_start_times: set[int] = set()
+
+    if initial_wait > 0:
+        if mark_failure_start:
+            failure_start_times.add(1)
+        for _ in range(initial_wait):
+            current_time += 1
+            path.append(current)
+            delayed_times.add(current_time)
+
+    if not agent_tasks:
+        if current not in return_goals_default:
+            goal_available_after = None
+            if station_mode == "Available":
+                return_goals, goal_available_after = station_availability(reservations, return_goals_default)
+                if not return_goals:
+                    raise RuntimeError("No free station available for idle return.")
+            else:
+                return_goals, goal_available_after = goal_availability(reservations, return_goals_default)
+
+            return_path = find_path(
+                warehouse,
+                reservations,
+                current,
+                current_time,
+                return_goals,
+                algorithm,
+                blocked_cells=blocked_cells,
+                goal_available_after=goal_available_after,
+            )
+            path = merge_segments(path, return_path)
+
+        return AgentPlan(
+            agent_id=agent_id,
+            color=color,
+            home=home,
+            home_index=home_index,
+            path=path,
+            tasks=agent_tasks,
+            pickup_times=pickup_times,
+            completion_times=completion_times,
+            missed_deadlines=missed_deadlines,
+            delayed_times=delayed_times,
+            failure_start_times=failure_start_times,
+        )
+
+    for task_index, task in enumerate(agent_tasks):
+        task_already_picked = carrying and task_index == 0
+
+        if not task_already_picked:
+            release_time = max(0, task.release_time - absolute_start_time)
+            if current_time < release_time:
+                path = wait_until_time(
+                    warehouse,
+                    reservations,
+                path,
+                release_time,
+                algorithm,
+                blocked_cells=blocked_cells,
+            )
+                current = path[-1]
+                current_time = len(path) - 1
+
+            pickup_goals = warehouse.pickup_positions(task.shelf_index)
+            to_pickup = find_path(
+                warehouse,
+                reservations,
+                current,
+                current_time,
+                pickup_goals,
+                algorithm,
+                blocked_cells=blocked_cells,
+            )
+            path = merge_segments(path, to_pickup)
+            current = path[-1]
+            current_time = len(path) - 1
+            pickup_times[task.task_id] = absolute_start_time + current_time
+
+        return_goals = return_goals_default
+        goal_available_after = None
+        if task_index == len(agent_tasks) - 1:
+            if station_mode == "Available":
+                return_goals, goal_available_after = station_availability(reservations, return_goals)
+                if not return_goals:
+                    raise RuntimeError("No free station available for final return.")
+            else:
+                return_goals, goal_available_after = goal_availability(reservations, return_goals)
+
+        back_to_station = find_path(
+            warehouse,
+            reservations,
+            current,
+            current_time,
+            return_goals,
+            algorithm,
+            blocked_cells=blocked_cells,
+            goal_available_after=goal_available_after,
+        )
+        path = merge_segments(path, back_to_station)
+        current = path[-1]
+        current_time = len(path) - 1
+        completion_time = absolute_start_time + current_time
+        completion_times[task.task_id] = completion_time
+        if task.deadline is not None and completion_time > task.deadline:
+            missed_deadlines.append(task.task_id)
+
+    return AgentPlan(
+        agent_id=agent_id,
+        color=color,
+        home=home,
+        home_index=home_index,
+        path=path,
+        tasks=agent_tasks,
+        pickup_times=pickup_times,
+        completion_times=completion_times,
+        missed_deadlines=missed_deadlines,
+        delayed_times=delayed_times,
+        failure_start_times=failure_start_times,
     )
 
 
@@ -1108,6 +1333,71 @@ def build_agent_plans_once(
     return [plans_by_id[agent_id] for agent_id in sorted(plans_by_id)]
 
 
+def build_agent_plans_from_state_once(
+    warehouse: WarehouseMap,
+    tasks_by_agent: dict[int, list[Task]],
+    homes: dict[int, Coord],
+    start_positions: dict[int, Coord],
+    carrying_by_agent: dict[int, bool],
+    forced_waits: dict[int, int],
+    mark_failure_start: set[int],
+    absolute_start_time: int,
+    colors: list[tuple[int, int, int]],
+    planning_order: list[int],
+    station_mode: str,
+    algorithm: str,
+) -> list[AgentPlan]:
+    station_cells = set(warehouse.stations)
+    plans_by_id: dict[int, AgentPlan] = {}
+    hold_untils: dict[int, int] = {}
+
+    for agent_id, tasks in tasks_by_agent.items():
+        hold_until = max(0, forced_waits.get(agent_id, 0))
+        if not carrying_by_agent.get(agent_id, False) and tasks:
+            next_release_offset = max(0, tasks[0].release_time - absolute_start_time)
+            hold_until = max(hold_until, next_release_offset)
+        hold_untils[agent_id] = hold_until
+
+    permanent_station_agents = {
+        agent_id
+        for agent_id, tasks in tasks_by_agent.items()
+        if not tasks and not carrying_by_agent.get(agent_id, False) and start_positions[agent_id] in station_cells
+    }
+
+    for index, agent_id in enumerate(planning_order):
+        pending_agent_ids = set(planning_order[index:])
+        reservations = build_reservations_from_state(
+            start_positions,
+            hold_untils,
+            forced_waits,
+            plans_by_id,
+            pending_agent_ids,
+            station_cells,
+            permanent_station_agents=permanent_station_agents,
+            exclude_agent_id=agent_id,
+        )
+        plan = build_agent_plan_from_state(
+            warehouse=warehouse,
+            reservations=reservations,
+            agent_id=agent_id,
+            start=start_positions[agent_id],
+            home=homes[agent_id],
+            home_index=warehouse.coord_to_index(homes[agent_id]),
+            color=colors[agent_id],
+            agent_tasks=tasks_by_agent[agent_id],
+            carrying=carrying_by_agent.get(agent_id, False),
+            initial_wait=forced_waits.get(agent_id, 0),
+            mark_failure_start=agent_id in mark_failure_start,
+            absolute_start_time=absolute_start_time,
+            station_mode=station_mode,
+            algorithm=algorithm,
+            blocked_cells=set(),
+        )
+        plans_by_id[agent_id] = plan
+
+    return [plans_by_id[agent_id] for agent_id in sorted(plans_by_id)]
+
+
 def truncate_path_to_steps(path: list[Coord], max_steps: int) -> list[Coord]:
     if not path:
         return []
@@ -1123,8 +1413,69 @@ def trim_trailing_waits(path: list[Coord]) -> list[Coord]:
     return trimmed
 
 
+def build_final_return_reservations(
+    plans: list[AgentPlan],
+    *,
+    exclude_agent_id: int | None = None,
+) -> ReservationTable:
+    reservations = ReservationTable()
+    for plan in plans:
+        if plan.agent_id == exclude_agent_id:
+            continue
+        reservations.reserve_path(plan.path, permanent_final=True)
+    return reservations
+
+
+def return_completed_agents_to_stations(
+    warehouse: WarehouseMap,
+    plans: list[AgentPlan],
+    station_mode: str,
+    algorithm: str,
+) -> list[AgentPlan]:
+    updated_plans = [plan for plan in plans]
+    station_cells = set(warehouse.stations)
+    current_return_start = max((len(plan.path) - 1 for plan in updated_plans), default=0)
+
+    for index, plan in enumerate(updated_plans):
+        if plan.path[-1] in station_cells:
+            continue
+
+        return_goals = {plan.home} if station_mode == "Set" else station_cells
+        waited_path = plan.path[:]
+        missing_waits = current_return_start - (len(waited_path) - 1)
+        if missing_waits > 0:
+            waited_path.extend([waited_path[-1]] * missing_waits)
+
+        reservations = build_final_return_reservations(updated_plans, exclude_agent_id=plan.agent_id)
+        final_return = find_path(
+            warehouse,
+            reservations,
+            waited_path[-1],
+            len(waited_path) - 1,
+            return_goals,
+            low_level_algorithm_name(algorithm),
+        )
+        returned_plan = AgentPlan(
+            agent_id=plan.agent_id,
+            color=plan.color,
+            home=plan.home,
+            home_index=plan.home_index,
+            path=merge_segments(waited_path, final_return),
+            tasks=plan.tasks,
+            pickup_times=plan.pickup_times,
+            completion_times=plan.completion_times,
+            missed_deadlines=plan.missed_deadlines,
+            delayed_times=plan.delayed_times,
+        )
+        updated_plans[index] = returned_plan
+        current_return_start = len(returned_plan.path) - 1
+
+    return updated_plans
+
+
 def build_window_reservations(
     progress_by_id: dict[int, WindowAgentProgress],
+    window_end: int,
     *,
     exclude_agent_id: int | None = None,
 ) -> ReservationTable:
@@ -1132,7 +1483,12 @@ def build_window_reservations(
     for agent_id in sorted(progress_by_id):
         if agent_id == exclude_agent_id:
             continue
-        reservations.reserve_path(progress_by_id[agent_id].path, permanent_final=False)
+        progress_path = progress_by_id[agent_id].path
+        padded_path = progress_path[:]
+        missing_steps = window_end - (len(progress_path) - 1)
+        if missing_steps > 0:
+            padded_path.extend([progress_path[-1]] * missing_steps)
+        reservations.reserve_path(padded_path, permanent_final=False)
     return reservations
 
 
@@ -1370,7 +1726,18 @@ def build_whca_agent_plans_once(
 
         signature_before = whca_progress_signature(progress_by_id)
         for agent_id in planning_order:
-            reservations = build_window_reservations(progress_by_id, exclude_agent_id=agent_id)
+            progress = progress_by_id[agent_id]
+            current_window_end = len(progress_by_id[agent_id].path) - 1 + WHCA_WINDOW_SIZE
+            if not progress.carrying and progress.task_index >= len(tasks_by_agent[agent_id]):
+                missing_steps = current_window_end - (len(progress.path) - 1)
+                if missing_steps > 0:
+                    progress.path.extend([progress.path[-1]] * missing_steps)
+                continue
+            reservations = build_window_reservations(
+                progress_by_id,
+                current_window_end,
+                exclude_agent_id=agent_id,
+            )
             extend_windowed_agent_progress(
                 warehouse=warehouse,
                 reservations=reservations,
@@ -1418,7 +1785,7 @@ def build_whca_agent_plans_once(
                 missed_deadlines=progress.missed_deadlines,
             )
         )
-    return plans
+    return return_completed_agents_to_stations(warehouse, plans, station_mode, algorithm)
 
 
 def build_agent_plans(
@@ -1478,6 +1845,56 @@ def build_agent_plans(
     if last_error is None:
         raise RuntimeError(f"Could not find a collision-free plan after {attempts} planning attempts.")
     raise RuntimeError(f"Could not find a collision-free plan after {attempts} planning attempts. Last error: {last_error}")
+
+
+def build_agent_plans_from_state(
+    warehouse: WarehouseMap,
+    tasks_by_agent: dict[int, list[Task]],
+    homes: dict[int, Coord],
+    start_positions: dict[int, Coord],
+    carrying_by_agent: dict[int, bool],
+    forced_waits: dict[int, int],
+    mark_failure_start: set[int],
+    absolute_start_time: int,
+    colors: list[tuple[int, int, int]],
+    station_mode: str,
+    algorithm: str,
+) -> list[AgentPlan]:
+    ordering_positions = {agent_id: start_positions[agent_id] for agent_id in tasks_by_agent}
+    planning_orders = build_planning_orders(
+        warehouse,
+        tasks_by_agent,
+        ordering_positions,
+        station_mode,
+        algorithm,
+    )
+
+    last_error: RuntimeError | None = None
+    for planning_order in planning_orders:
+        try:
+            return build_agent_plans_from_state_once(
+                warehouse=warehouse,
+                tasks_by_agent=tasks_by_agent,
+                homes=homes,
+                start_positions=start_positions,
+                carrying_by_agent=carrying_by_agent,
+                forced_waits=forced_waits,
+                mark_failure_start=mark_failure_start,
+                absolute_start_time=absolute_start_time,
+                colors=colors,
+                planning_order=planning_order,
+                station_mode=station_mode,
+                algorithm=algorithm,
+            )
+        except RuntimeError as exc:
+            last_error = exc
+
+    attempts = len(planning_orders)
+    if last_error is None:
+        raise RuntimeError(f"Could not find a collision-free suffix plan after {attempts} planning attempts.")
+    raise RuntimeError(
+        f"Could not find a collision-free suffix plan after {attempts} planning attempts. Last error: {last_error}"
+    )
 
 
 def build_relaxed_agent_plans(

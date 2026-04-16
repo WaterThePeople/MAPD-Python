@@ -20,6 +20,10 @@ def algorithm_label(value: str) -> str:
     return value.strip().lower()
 
 
+def failure_model_label(value: str) -> str:
+    return value.strip().lower()
+
+
 def layout_size_label(value: str | None) -> str:
     return "legacy" if value is None else value.strip().lower()
 

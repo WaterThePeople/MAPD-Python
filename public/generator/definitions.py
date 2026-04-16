@@ -121,6 +121,10 @@ class ScenarioConfig:
     set_assignment_policy: str
     max_replans: int
     max_open_tasks_on_shelves: int
+    failure_probability: float
+    failure_duration_min: int
+    failure_duration_max: int
+    failure_seed: int
 
     @property
     def size(self) -> SizeProfile:

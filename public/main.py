@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from mapd.collisions import total_collision_count
+from mapd.execution import apply_failure_model
 from mapd.feasibility import ImpossibleVariantError, ensure_variant_possible
 from mapd.loader import (
     expand_scenario_variants,
@@ -18,6 +19,7 @@ from mapd.loader import (
     resolve_scenario_variant,
 )
 from mapd.models import (
+    FAILURE_MODEL_CHOICES,
     PlanningLimitExceeded,
     PlanningStats,
     ScenarioDefinition,
@@ -29,6 +31,7 @@ from mapd.report_metrics import (
     algorithm_label,
     distance_step_sum,
     format_duration,
+    failure_model_label,
     layout_size_label,
     missed_deadline_count,
     missed_deadline_time_sum,
@@ -73,6 +76,7 @@ LAYOUT_TYPE_CHOICES = ["square", "hexagon", "triangle"]
 MODE_CHOICES = ["Set", "Available"]
 STRATEGY_CHOICES = ["FCFS", "Robin", "GreedyCost", "None"]
 ALGORITHM_CHOICES = ["WHCA*", "SIPP", "BFS"]
+FAILURE_MODEL_CHOICES_LIST = list(FAILURE_MODEL_CHOICES)
 SUITE_ONLY_ALLOWED_FLAGS = {
     "--gif",
     "--jobs",
@@ -82,6 +86,7 @@ SUITE_ONLY_ALLOWED_FLAGS = {
     "--station",
     "--strategy",
     "--algorithm",
+    "--failure-model",
     "--suite-output-dir",
     "--results-dir",
     "--cell-size",
@@ -196,6 +201,11 @@ def build_parser() -> argparse.ArgumentParser:
         help=f"Pathfinding algorithm for a single scenario run. Default: {DEFAULT_ALGORITHM}",
     )
     parser.add_argument(
+        "--failure-model",
+        choices=FAILURE_MODEL_CHOICES_LIST,
+        help="Failure model for a single scenario run. Default: the first model defined by the scenario.",
+    )
+    parser.add_argument(
         "--gif",
         action="store_true",
         default=DEFAULT_RENDER_GIF,
@@ -273,7 +283,7 @@ def run_relaxed_simulation(
     time_budget_seconds: float = FALLBACK_GIF_TIME_BUDGET_SECONDS,
     soft_max_expansions: int = FALLBACK_GIF_SOFT_MAX_EXPANSIONS,
     stats: PlanningStats | None = None,
-) -> tuple[int, list]:
+) -> list:
     plans = build_relaxed_agent_plans(
         warehouse,
         agent_count,
@@ -287,17 +297,7 @@ def run_relaxed_simulation(
         soft_max_expansions=soft_max_expansions,
         stats=stats,
     )
-    makespan = render_or_measure(
-        warehouse,
-        plans,
-        output_path,
-        cell_size,
-        frame_duration,
-        progress,
-        render_gif,
-        debug_frames_dir,
-    )
-    return makespan, plans
+    return plans
 
 
 def resolve_scenario_path(scenario_arg: str) -> Path:
@@ -384,6 +384,7 @@ def variant_filename_token(value: str) -> str:
         "WHCA*": "whca",
         "SIPP": "sipp",
         "BFS": "bfs",
+        "AgentDelay": "agentdelay",
     }
     return token_map[value]
 
@@ -397,12 +398,14 @@ def variant_label(
     station_mode: str,
     strategy: str,
     algorithm: str,
+    failure_model: str,
 ) -> str:
     size_prefix = "" if layout_size is None else f"{layout_size}_"
     return (
         f"{size_prefix}{layout_type}_layout{layout_id}_{scenario_label}_"
         f"{variant_filename_token(mode)}_{variant_filename_token(station_mode)}_"
-        f"{variant_filename_token(strategy)}_{variant_filename_token(algorithm)}"
+        f"{variant_filename_token(strategy)}_{variant_filename_token(algorithm)}_"
+        f"{variant_filename_token(failure_model)}"
     )
 
 
@@ -514,7 +517,7 @@ def run_simulation(
     render_gif: bool,
     debug_frames_dir: Path | None = None,
     stats: PlanningStats | None = None,
-) -> tuple[int, list]:
+) -> list:
     plans = build_agent_plans(
         warehouse,
         agent_count,
@@ -525,27 +528,19 @@ def run_simulation(
         algorithm,
         stats=stats,
     )
-    makespan = render_or_measure(
-        warehouse,
-        plans,
-        output_path,
-        cell_size,
-        frame_duration,
-        progress,
-        render_gif,
-        debug_frames_dir,
-    )
-    return makespan, plans
+    return plans
 
 
 def execute_variant(
     warehouse,
     agent_count: int,
     tasks,
+    metadata,
     mode: str,
     station_mode: str,
     strategy: str,
     algorithm: str,
+    failure_model: str,
     output_path: Path | None,
     cell_size: int,
     frame_duration: int,
@@ -569,10 +564,12 @@ def execute_variant(
             collisions=None,
             replans=stats.replans,
             simulation_time_seconds=time.perf_counter() - started_at,
+            failure_count=0,
+            failure_delay_steps=0,
         )
 
     try:
-        makespan, plans = run_simulation(
+        plans = run_simulation(
             warehouse,
             agent_count,
             tasks,
@@ -597,11 +594,13 @@ def execute_variant(
             collisions=None,
             replans=stats.replans,
             simulation_time_seconds=time.perf_counter() - started_at,
+            failure_count=0,
+            failure_delay_steps=0,
         )
     except RuntimeError as exc:
         try:
             stats.note_replan()
-            relaxed_makespan, relaxed_plans = run_relaxed_simulation(
+            relaxed_plans = run_relaxed_simulation(
                 warehouse,
                 agent_count,
                 tasks,
@@ -626,6 +625,8 @@ def execute_variant(
                 collisions=None,
                 replans=stats.replans,
                 simulation_time_seconds=time.perf_counter() - started_at,
+                failure_count=0,
+                failure_delay_steps=0,
             )
         except RuntimeError as relaxed_exc:
             return VariantExecutionResult(
@@ -636,26 +637,96 @@ def execute_variant(
                 collisions=None,
                 replans=stats.replans,
                 simulation_time_seconds=time.perf_counter() - started_at,
+                failure_count=0,
+                failure_delay_steps=0,
+            )
+
+        try:
+            executed_relaxed_plans, failure_count, failure_delay_steps = apply_failure_model(
+                warehouse,
+                relaxed_plans,
+                metadata,
+                failure_model,
+                station_mode,
+                algorithm,
+            )
+            relaxed_makespan = render_or_measure(
+                warehouse,
+                executed_relaxed_plans,
+                output_path,
+                cell_size,
+                frame_duration,
+                progress,
+                render_gif,
+                debug_frames_dir,
+            )
+        except RuntimeError as failure_exc:
+            return VariantExecutionResult(
+                status=STATUS_NO_SOLUTION,
+                details=f"{exc} Best-effort execution failed under {failure_model_label(failure_model)}: {failure_exc}",
+                makespan=None,
+                plans=None,
+                collisions=None,
+                replans=stats.replans,
+                simulation_time_seconds=time.perf_counter() - started_at,
+                failure_count=0,
+                failure_delay_steps=0,
             )
 
         return VariantExecutionResult(
             status=STATUS_NO_SOLUTION,
             details=str(exc),
             makespan=relaxed_makespan,
-            plans=relaxed_plans,
-            collisions=total_collision_count(relaxed_plans),
+            plans=executed_relaxed_plans,
+            collisions=total_collision_count(executed_relaxed_plans),
             replans=stats.replans,
             simulation_time_seconds=time.perf_counter() - started_at,
+            failure_count=failure_count,
+            failure_delay_steps=failure_delay_steps,
+        )
+
+    try:
+        executed_plans, failure_count, failure_delay_steps = apply_failure_model(
+            warehouse,
+            plans,
+            metadata,
+            failure_model,
+            station_mode,
+            algorithm,
+        )
+        makespan = render_or_measure(
+            warehouse,
+            executed_plans,
+            output_path,
+            cell_size,
+            frame_duration,
+            progress,
+            render_gif,
+            debug_frames_dir,
+        )
+    except RuntimeError as exc:
+        return VariantExecutionResult(
+            status=STATUS_NO_SOLUTION,
+            details=f"Execution failed under {failure_model_label(failure_model)}: {exc}",
+            makespan=None,
+            plans=None,
+            collisions=None,
+            replans=stats.replans,
+            simulation_time_seconds=time.perf_counter() - started_at,
+            failure_count=0,
+            failure_delay_steps=0,
         )
 
     return VariantExecutionResult(
         status=STATUS_SOLVED,
         details=None,
         makespan=makespan,
-        plans=plans,
-        collisions=total_collision_count(plans),
+        plans=executed_plans,
+        collisions=total_collision_count(executed_plans),
         replans=stats.replans,
         simulation_time_seconds=time.perf_counter() - started_at,
+        failure_count=failure_count,
+        failure_delay_steps=failure_delay_steps,
     )
 
 
@@ -668,6 +739,7 @@ def variant_description(
     station_mode: str,
     strategy: str,
     algorithm: str,
+    failure_model: str,
 ) -> str:
     strategy_value = strategy_label(strategy) or "-"
     return (
@@ -678,7 +750,8 @@ def variant_description(
         f"mode={mode_label(mode)} "
         f"station={mode_label(station_mode)} "
         f"strategy={strategy_value} "
-        f"algorithm={algorithm_label(algorithm)}"
+        f"algorithm={algorithm_label(algorithm)} "
+        f"failure={failure_model_label(failure_model)}"
     )
 
 
@@ -702,6 +775,10 @@ def variant_result_summary(
         parts.append(f"makespan={result.makespan}")
     if result.collisions is not None:
         parts.append(f"collisions={result.collisions}")
+    if result.failure_count is not None:
+        parts.append(f"failures={result.failure_count}")
+    if result.failure_delay_steps is not None:
+        parts.append(f"failure duration={result.failure_delay_steps}")
 
     missed = missed_deadline_count(result.plans)
     missed_time = missed_deadline_time_sum(result.plans)
@@ -792,6 +869,8 @@ def variant_matches_suite_filters(
         return False
     if "--algorithm" in explicit_flags and variant.algorithm != args.algorithm:
         return False
+    if "--failure-model" in explicit_flags and variant.failure_model != args.failure_model:
+        return False
     if "--strategy" in explicit_flags and variant.strategy != args.strategy:
         return False
     return True
@@ -804,7 +883,7 @@ def filter_suite_variants(
 ) -> list[ScenarioVariant]:
     if not any(
         flag in explicit_flags
-        for flag in ("--layout", "--type", "--mode", "--station", "--strategy", "--algorithm")
+        for flag in ("--layout", "--type", "--mode", "--station", "--strategy", "--algorithm", "--failure-model")
     ):
         return variants
     return [variant for variant in variants if variant_matches_suite_filters(variant, args, explicit_flags)]
@@ -860,6 +939,7 @@ def build_suite_variant_task(
         variant.station_mode,
         variant.strategy,
         variant.algorithm,
+        variant.failure_model,
     )
     output_path = str(output_dir / f"{current_label}.gif") if render_gif else None
     return SuiteVariantTask(
@@ -893,6 +973,7 @@ def run_suite_variant_task(task: SuiteVariantTask) -> SuiteVariantOutcome:
             task.variant.station_mode,
             task.variant.strategy,
             task.variant.algorithm,
+            task.variant.failure_model,
         )
     )
 
@@ -900,10 +981,12 @@ def run_suite_variant_task(task: SuiteVariantTask) -> SuiteVariantOutcome:
         warehouse,
         task.definition.agent_count,
         task.definition.tasks,
+        task.definition.metadata,
         task.variant.mode,
         task.variant.station_mode,
         task.variant.strategy,
         task.variant.algorithm,
+        task.variant.failure_model,
         output_path,
         task.cell_size,
         task.frame_duration,
@@ -934,6 +1017,7 @@ def run_suite_variant_task(task: SuiteVariantTask) -> SuiteVariantOutcome:
             task.variant.station_mode,
             task.variant.strategy,
             task.variant.algorithm,
+            task.variant.failure_model,
             result,
             station_cells,
         ),
@@ -987,6 +1071,7 @@ def execute_suite_tasks(tasks: list[SuiteVariantTask], worker_count: int) -> lis
                             task.variant.station_mode,
                             task.variant.strategy,
                             task.variant.algorithm,
+                            task.variant.failure_model,
                         )
                     ) from exc
 
@@ -1088,6 +1173,7 @@ def run_single_scenario(args: argparse.Namespace) -> None:
         station_mode=station_mode,
         strategy=strategy,
         algorithm=algorithm,
+        failure_model=args.failure_model,
     )
 
     resolved_layout_id, resolved_layout_path, resolved_layout_type = resolve_layout_reference(
@@ -1114,6 +1200,7 @@ def run_single_scenario(args: argparse.Namespace) -> None:
             variant.station_mode,
             variant.strategy,
             variant.algorithm,
+            variant.failure_model,
         )
     )
 
@@ -1121,10 +1208,12 @@ def run_single_scenario(args: argparse.Namespace) -> None:
         warehouse,
         definition.agent_count,
         definition.tasks,
+        definition.metadata,
         variant.mode,
         variant.station_mode,
         variant.strategy,
         variant.algorithm,
+        variant.failure_model,
         output_path,
         args.cell_size,
         args.frame_duration,

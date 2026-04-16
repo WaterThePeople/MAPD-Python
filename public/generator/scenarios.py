@@ -9,6 +9,10 @@ from mapd.models import Task
 from .constants import (
     DEFAULT_ALGORITHM_CHOICES,
     DEFAULT_CAPACITY_MODEL,
+    DEFAULT_FAILURE_DURATION_MAX,
+    DEFAULT_FAILURE_DURATION_MIN,
+    DEFAULT_FAILURE_MODEL_CHOICES,
+    DEFAULT_FAILURE_PROBABILITY,
     DEFAULT_HOTSPOT_SHELF_SHARE,
     DEFAULT_HOTSPOT_TASK_SHARE,
     DEFAULT_MODE_CHOICES,
@@ -31,6 +35,15 @@ def format_number(value: float) -> str:
     return f"{value:.2f}"
 
 
+def format_probability_percentage(value: float) -> str:
+    percentage = value * 100
+    if percentage >= 1.0:
+        return f"{percentage:.0f}%"
+    if percentage >= 0.01:
+        return f"{percentage:.2f}%"
+    return f"{percentage:.4f}%"
+
+
 def title_join(values: list[str]) -> str:
     return "[" + ", ".join(values) + "]"
 
@@ -48,6 +61,7 @@ def serialize_scenario(config: ScenarioConfig, tasks: list[Task]) -> str:
         f"Station: {title_join(DEFAULT_STATION_CHOICES)}",
         f"Strategy: {title_join(DEFAULT_STRATEGY_CHOICES)}",
         f"Algorithm: {title_join(DEFAULT_ALGORITHM_CHOICES)}",
+        f"FailureModel: {title_join(DEFAULT_FAILURE_MODEL_CHOICES)}",
         "",
         f"Agents: {config.agents}",
         f"Tasks: {len(tasks)}",
@@ -73,6 +87,11 @@ def serialize_scenario(config: ScenarioConfig, tasks: list[Task]) -> str:
         f"DeadlineSlack: {config.deadline_slack:.2f}",
         "",
         f"MaxReplans: {config.max_replans}",
+        "",
+        f"FailureProbability: {format_probability_percentage(config.failure_probability)}",
+        f"FailureDurationMin: {config.failure_duration_min}",
+        f"FailureDurationMax: {config.failure_duration_max}",
+        f"FailureSeed: {config.failure_seed}",
         "",
         "Task Agent Shelf Time Deadline",
     ]
@@ -207,6 +226,10 @@ def build_scenario_config(
         set_assignment_policy=DEFAULT_SET_ASSIGNMENT_POLICY,
         max_replans=batch.max_replans,
         max_open_tasks_on_shelves=batch.max_open_tasks_on_shelves,
+        failure_probability=DEFAULT_FAILURE_PROBABILITY,
+        failure_duration_min=DEFAULT_FAILURE_DURATION_MIN,
+        failure_duration_max=DEFAULT_FAILURE_DURATION_MAX,
+        failure_seed=batch.seed,
     )
 
 

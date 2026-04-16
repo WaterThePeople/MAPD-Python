@@ -1,7 +1,8 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 Coord = tuple[int, int]
+FAILURE_MODEL_CHOICES = ("None", "AgentDelay")
 
 
 @dataclass(frozen=True)
@@ -24,6 +25,8 @@ class AgentPlan:
     pickup_times: dict[int, int]
     completion_times: dict[int, int]
     missed_deadlines: list[int]
+    delayed_times: set[int] = field(default_factory=set)
+    failure_start_times: set[int] = field(default_factory=set)
 
 
 @dataclass
@@ -65,6 +68,10 @@ class ScenarioMetadata:
     deadline_slack_policy: str | None = None
     deadline_slack: float | None = None
     max_replans: int | None = None
+    failure_probability: float | None = None
+    failure_duration_min: int | None = None
+    failure_duration_max: int | None = None
+    failure_seed: int | None = None
 
 
 @dataclass(frozen=True)
@@ -78,6 +85,7 @@ class ScenarioDefinition:
     station_modes: list[str]
     strategies: list[str]
     algorithms: list[str]
+    failure_models: list[str]
     metadata: ScenarioMetadata
 
 
@@ -89,6 +97,7 @@ class ScenarioVariant:
     station_mode: str
     strategy: str
     algorithm: str
+    failure_model: str
 
 
 @dataclass
@@ -100,3 +109,5 @@ class VariantExecutionResult:
     collisions: int | None
     replans: int
     simulation_time_seconds: float
+    failure_count: int | None = None
+    failure_delay_steps: int | None = None

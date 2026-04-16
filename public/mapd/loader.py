@@ -3,7 +3,7 @@ import re
 from pathlib import Path
 
 from mapd.algorithms import normalize_algorithm_name
-from mapd.models import ScenarioDefinition, ScenarioMetadata, ScenarioVariant, Task
+from mapd.models import FAILURE_MODEL_CHOICES, ScenarioDefinition, ScenarioMetadata, ScenarioVariant, Task
 from mapd.paths import LAYOUTS_ROOT
 from mapd.warehouse import WarehouseMap
 
@@ -14,6 +14,7 @@ SUPPORTED_SPATIAL_DISTRIBUTIONS = {
     "hotspot": "Hotspot",
     "wave": "Wave",
 }
+SUPPORTED_FAILURE_MODELS = {value.lower(): value for value in FAILURE_MODEL_CHOICES}
 
 
 def normalize_layout_type(value: str | None) -> str:
@@ -274,6 +275,13 @@ def _normalize_strategy(value: str) -> str:
     return strategy_map[key]
 
 
+def _normalize_failure_model(value: str) -> str:
+    key = value.strip().lower()
+    if key not in SUPPORTED_FAILURE_MODELS:
+        raise ValueError(f"Unsupported failure model: {value}")
+    return SUPPORTED_FAILURE_MODELS[key]
+
+
 def _parse_choices(raw_value: str, normalizer) -> list[str]:
     values = []
     for item in _parse_choice_items(raw_value):
@@ -370,6 +378,27 @@ def _parse_optional_float_headers(
     return None
 
 
+def _parse_optional_probability_header(text: str, label: str) -> float | None:
+    raw_value = _find_header_value(text, label)
+    if raw_value is None:
+        return None
+
+    stripped = raw_value.strip()
+    try:
+        if stripped.endswith("%"):
+            value = float(stripped[:-1].strip()) / 100.0
+        else:
+            value = float(stripped)
+            if value > 1.0:
+                value /= 100.0
+    except ValueError as exc:
+        raise ValueError(f"Scenario header '{label}' must be a number or percentage.") from exc
+
+    if value < 0.0 or value > 1.0:
+        raise ValueError(f"Scenario header '{label}' must be between 0% and 100%.")
+    return value
+
+
 def _normalize_influx(value: str) -> str:
     key = value.strip().lower()
     if key not in SUPPORTED_INFLUX_TYPES:
@@ -416,6 +445,10 @@ def _parse_scenario_metadata(text: str) -> ScenarioMetadata:
         deadline_slack_policy=_parse_optional_text_header(text, "DeadlineSlackPolicy"),
         deadline_slack=_parse_optional_float_header(text, "DeadlineSlack", min_value=0.0),
         max_replans=_parse_optional_int_header(text, "MaxReplans", min_value=0),
+        failure_probability=_parse_optional_probability_header(text, "FailureProbability"),
+        failure_duration_min=_parse_optional_int_header(text, "FailureDurationMin", min_value=0),
+        failure_duration_max=_parse_optional_int_header(text, "FailureDurationMax", min_value=0),
+        failure_seed=_parse_optional_int_header(text, "FailureSeed", min_value=0),
     )
     _validate_scenario_metadata(metadata)
     return metadata
@@ -453,6 +486,9 @@ def _validate_scenario_metadata(metadata: ScenarioMetadata) -> None:
 
     if metadata.deadline_slack_policy is not None and metadata.deadline_slack is None:
         raise ValueError("Scenario header 'DeadlineSlack' is required when DeadlineSlackPolicy is provided.")
+    if metadata.failure_duration_min is not None and metadata.failure_duration_max is not None:
+        if metadata.failure_duration_min > metadata.failure_duration_max:
+            raise ValueError("Scenario header 'FailureDurationMin' must be <= 'FailureDurationMax'.")
 
 
 def load_scenario_definition(path: Path) -> ScenarioDefinition:
@@ -464,6 +500,7 @@ def load_scenario_definition(path: Path) -> ScenarioDefinition:
     station_value = _find_header_value(text, "Station")
     strategy_value = _find_header_value(text, "Strategy")
     algorithm_value = _find_header_value(text, "Algorithm")
+    failure_model_value = _find_header_value(text, "FailureModel")
     type_value = _find_header_value(text, "Type")
     layout_value = _find_header_value(text, "Layout")
     if (
@@ -488,6 +525,10 @@ def load_scenario_definition(path: Path) -> ScenarioDefinition:
         algorithms = ["WHCA*" if algorithm == "A*" else algorithm for algorithm in algorithms]
     else:
         algorithms = ["BFS"]
+    if failure_model_value is not None:
+        failure_models = _parse_choices(failure_model_value, _normalize_failure_model)
+    else:
+        failure_models = ["None"]
     if type_value is not None:
         layout_types = _parse_choices(type_value, normalize_layout_type)
     else:
@@ -502,6 +543,18 @@ def load_scenario_definition(path: Path) -> ScenarioDefinition:
         layout_ids = [fallback_layout_id]
 
     metadata = _parse_scenario_metadata(text)
+    if "AgentDelay" in failure_models:
+        required_failure_headers = {
+            "FailureProbability": metadata.failure_probability,
+            "FailureDurationMin": metadata.failure_duration_min,
+            "FailureDurationMax": metadata.failure_duration_max,
+            "FailureSeed": metadata.failure_seed,
+        }
+        missing_failure_headers = [label for label, value in required_failure_headers.items() if value is None]
+        if missing_failure_headers:
+            raise ValueError(
+                "Scenario is missing failure configuration headers: " + ", ".join(missing_failure_headers) + "."
+            )
 
     tasks: list[Task] = []
     for line in text.splitlines():
@@ -541,6 +594,7 @@ def load_scenario_definition(path: Path) -> ScenarioDefinition:
         station_modes=station_modes,
         strategies=strategies,
         algorithms=algorithms,
+        failure_models=failure_models,
         metadata=metadata,
     )
 
@@ -553,17 +607,19 @@ def expand_scenario_variants(definition: ScenarioDefinition) -> list[ScenarioVar
                 strategies = ["None"] if mode == "Set" else definition.strategies
                 for station_mode in definition.station_modes:
                     for algorithm in definition.algorithms:
-                        for strategy in strategies:
-                            variant = ScenarioVariant(
-                                layout_id=layout_id,
-                                layout_type=layout_type,
-                                mode=mode,
-                                station_mode=station_mode,
-                                strategy=strategy,
-                                algorithm=algorithm,
-                            )
-                            if variant not in variants:
-                                variants.append(variant)
+                        for failure_model in definition.failure_models:
+                            for strategy in strategies:
+                                variant = ScenarioVariant(
+                                    layout_id=layout_id,
+                                    layout_type=layout_type,
+                                    mode=mode,
+                                    station_mode=station_mode,
+                                    strategy=strategy,
+                                    algorithm=algorithm,
+                                    failure_model=failure_model,
+                                )
+                                if variant not in variants:
+                                    variants.append(variant)
     return variants
 
 
@@ -576,6 +632,7 @@ def resolve_scenario_variant(
     station_mode: str | None = None,
     strategy: str | None = None,
     algorithm: str | None = None,
+    failure_model: str | None = None,
 ) -> ScenarioVariant:
     resolved_layout_id = definition.layout_ids[0] if layout_id is None else layout_id
     if resolved_layout_id not in definition.layout_ids:
@@ -600,6 +657,11 @@ def resolve_scenario_variant(
         resolved_algorithm = "WHCA*"
     if resolved_algorithm not in definition.algorithms:
         raise ValueError(f"Algorithm '{resolved_algorithm}' is not allowed by this scenario.")
+    resolved_failure_model = (
+        _normalize_failure_model(failure_model) if failure_model is not None else definition.failure_models[0]
+    )
+    if resolved_failure_model not in definition.failure_models:
+        raise ValueError(f"Failure model '{resolved_failure_model}' is not allowed by this scenario.")
 
     if resolved_mode == "Set":
         return ScenarioVariant(
@@ -609,6 +671,7 @@ def resolve_scenario_variant(
             station_mode=resolved_station,
             strategy="None",
             algorithm=resolved_algorithm,
+            failure_model=resolved_failure_model,
         )
 
     resolved_strategy = _normalize_strategy(strategy) if strategy is not None else definition.strategies[0]
@@ -622,4 +685,5 @@ def resolve_scenario_variant(
         station_mode=resolved_station,
         strategy=resolved_strategy,
         algorithm=resolved_algorithm,
+        failure_model=resolved_failure_model,
     )
