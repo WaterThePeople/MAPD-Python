@@ -4,7 +4,6 @@ Seed: 971250564
 Size: Small
 Layout: [0]
 Type: [Square, Hexagon, Triangle]
-
 Mode: [Set, Available]
 Station: [Set, Available]
 Strategy: [FCFS, Robin, GreedyCost]
@@ -13,9 +12,6 @@ FailureModel: [None, AgentDelay]
 
 Agents: 20
 Tasks: 120
-CapacityModel: LayoutExpectedCost
-CapacityStepsPerTask: 38.47
-SetAssignmentPolicy: RoundRobin
 MaxOpenTasksOnShelves: 120
 
 Influx: Random
@@ -31,9 +27,7 @@ HotspotTaskShare: 0.70
 WaveZone: Center
 WaveRadius: 12
 
-DeadlineSlackPolicy: DensityBased
 DeadlineSlack: 0.50
-
 MaxReplans: 5
 
 FailureProbability: 0.10%

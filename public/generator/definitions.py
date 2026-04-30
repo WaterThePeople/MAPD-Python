@@ -102,7 +102,6 @@ class ScenarioConfig:
     layout_id: int
     agents: int
     task_count: int
-    capacity_model: str
     capacity_steps_per_task: float
     influx: str
     spatial_distribution: str
