@@ -1,4 +1,4 @@
-ID: 123456
+﻿ID: 123456
 Seed: 123456
 
 Size: Small
@@ -14,12 +14,10 @@ Agents: 5
 Tasks: 10
 MaxOpenTasksOnShelves: 120
 
-Influx: Poisson
-Lambda: 0.33
+Influx: Gaussian
 BurstAmount: 0
 BurstStartStep: 0
 BurstDurationSteps: 0
-BurstAmplitude: 1.0
 
 SpatialDistribution: Uniform
 HotspotShelfShare: 0.10
@@ -28,7 +26,7 @@ WaveZone: Center
 WaveRadius: 12
 
 DeadlineSlack: 0.20
-MaxReplans: 5
+MaxSimulationTimeSeconds: 240
 
 FailureProbability: 0.01%
 FailureDurationMin: 5
@@ -46,3 +44,4 @@ Task Agent Shelf Time Deadline
 8 2 72 20 90
 9 3 3 25 85
 10 4 88 30 100
+

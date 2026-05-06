@@ -4,6 +4,8 @@ import random
 
 from .definitions import ScenarioConfig
 
+GAUSSIAN_SIGMA_SHARE = 1.0 / 6.0
+
 
 def choose_agent(
     policy: str,
@@ -24,23 +26,21 @@ def generate_random_release_times(task_count: int, release_horizon_steps: int, r
     return sorted(rng.randrange(release_horizon_steps) for _ in range(task_count))
 
 
-def generate_poisson_release_times(task_count: int, release_horizon_steps: int, rng: random.Random) -> list[int]:
+def generate_gaussian_release_times(task_count: int, release_horizon_steps: int, rng: random.Random) -> list[int]:
     if task_count <= 1 or release_horizon_steps <= 1:
         return [0] * task_count
 
-    rate_per_step = task_count / release_horizon_steps
-    event_times = []
-    current = 0.0
+    center = (release_horizon_steps - 1) / 2.0
+    sigma = max(1.0, release_horizon_steps * GAUSSIAN_SIGMA_SHARE)
+    releases: list[int] = []
     for _ in range(task_count):
-        current += rng.expovariate(rate_per_step)
-        event_times.append(current)
-
-    latest = event_times[-1]
-    if latest <= 0:
-        return [0] * task_count
-
-    scale = max(1, release_horizon_steps - 1) / latest
-    return sorted(min(release_horizon_steps - 1, int(round(event_time * scale))) for event_time in event_times)
+        step = int(round(rng.gauss(center, sigma)))
+        attempts = 0
+        while (step < 0 or step >= release_horizon_steps) and attempts < 8:
+            step = int(round(rng.gauss(center, sigma)))
+            attempts += 1
+        releases.append(min(release_horizon_steps - 1, max(0, step)))
+    return sorted(releases)
 
 
 def sample_outside_burst(
@@ -119,6 +119,6 @@ def generate_burst_release_times(config: ScenarioConfig, rng: random.Random) -> 
 def generate_release_times(config: ScenarioConfig, rng: random.Random) -> list[int]:
     if config.influx == "Random":
         return generate_random_release_times(config.task_count, config.release_horizon_steps, rng)
-    if config.influx == "Poisson":
-        return generate_poisson_release_times(config.task_count, config.release_horizon_steps, rng)
+    if config.influx == "Gaussian":
+        return generate_gaussian_release_times(config.task_count, config.release_horizon_steps, rng)
     return generate_burst_release_times(config, rng)

@@ -13,7 +13,6 @@ from mapd.strategy import get_strategy
 from mapd.warehouse import WarehouseMap
 
 SOFT_COLLISION_PENALTY = 1000
-MAX_PLANNING_ORDER_ATTEMPTS = 10
 WHCA_WINDOW_SIZE = 16
 WHCA_MAX_TIME_FACTOR = 12
 WHCA_MIN_STALL_WINDOWS = 10
@@ -103,6 +102,7 @@ def find_path(
     algorithm: str,
     blocked_cells: set[Coord] | None = None,
     goal_available_after: dict[Coord, int] | None = None,
+    deadline: float | None = None,
 ) -> list[Coord]:
     if blocked_cells is None:
         blocked_cells = set()
@@ -126,6 +126,7 @@ def find_path(
                 max_time=max_time,
                 blocked_cells=blocked_cells,
                 goal_available_after=goal_available_after,
+                deadline=deadline,
             )
         except RuntimeError as exc:
             raise RuntimeError(
@@ -169,6 +170,7 @@ def find_path(
         neighbors=neighbors,
         heuristic=lambda state: goal_heuristic(warehouse, state[0], goals),
         tie_breaker=lambda state: descending_coord_priority(warehouse, state[0]),
+        should_abort=(lambda: deadline is not None and time.perf_counter() >= deadline),
     )
 
     try:
@@ -288,6 +290,7 @@ def wait_until_time(
     target_time: int,
     algorithm: str,
     blocked_cells: set[Coord] | None = None,
+    deadline: float | None = None,
 ) -> list[Coord]:
     if blocked_cells is None:
         blocked_cells = set()
@@ -302,6 +305,7 @@ def wait_until_time(
         target_time,
         algorithm,
         blocked_cells=blocked_cells,
+        deadline=deadline,
     )
     return merge_segments(path, wait_path)
 
@@ -314,6 +318,7 @@ def find_wait_path(
     target_time: int,
     algorithm: str,
     blocked_cells: set[Coord] | None = None,
+    deadline: float | None = None,
 ) -> list[Coord]:
     if blocked_cells is None:
         blocked_cells = set()
@@ -322,8 +327,8 @@ def find_wait_path(
         return [start]
 
     can_wait = True
-    for time in range(start_time + 1, target_time + 1):
-        if reservations.is_vertex_reserved(start, time):
+    for time_step in range(start_time + 1, target_time + 1):
+        if reservations.is_vertex_reserved(start, time_step):
             can_wait = False
             break
 
@@ -359,6 +364,7 @@ def find_wait_path(
         neighbors=neighbors,
         heuristic=lambda state: max(0, target_time - state[1]),
         tie_breaker=lambda state: descending_coord_priority(warehouse, state[0]),
+        should_abort=(lambda: deadline is not None and time.perf_counter() >= deadline),
     )
 
     try:
@@ -391,6 +397,7 @@ def shortest_distance(
     goals: set[Coord],
     blocked_cells: set[Coord],
     algorithm: str,
+    deadline: float | None = None,
 ) -> int:
     if not goals:
         raise RuntimeError("Could not find a static path because no goal cells were available.")
@@ -403,6 +410,7 @@ def shortest_distance(
         neighbors=lambda coord: [next_coord for next_coord in warehouse.neighbors(coord) if next_coord not in blocked_cells],
         heuristic=lambda coord: goal_heuristic(warehouse, coord, goals),
         tie_breaker=lambda coord: descending_coord_priority(warehouse, coord),
+        should_abort=(lambda: deadline is not None and time.perf_counter() >= deadline),
     )
 
     try:
@@ -420,6 +428,7 @@ def assign_available_tasks(
     station_mode: str,
     strategy: str,
     algorithm: str,
+    deadline: float | None = None,
 ) -> list[Task]:
     strategy_impl = get_strategy(strategy, agent_count)
     if strategy_impl.name == "None":
@@ -466,14 +475,29 @@ def assign_available_tasks(
         cache_key = (agent_id, task.shelf_index)
         if cache_key not in distance_cache:
             pickup_goals = warehouse.pickup_positions(task.shelf_index)
-            distance_cache[cache_key] = shortest_distance(warehouse, homes[agent_id], pickup_goals, set(), algorithm)
+            distance_cache[cache_key] = shortest_distance(
+                warehouse,
+                homes[agent_id],
+                pickup_goals,
+                set(),
+                algorithm,
+                deadline=deadline,
+            )
 
         distance_to_pickup = distance_cache[cache_key]
         if station_mode == "Available":
             if task.shelf_index not in return_cache:
                 pickup_goals = warehouse.pickup_positions(task.shelf_index)
                 return_cache[task.shelf_index] = min(
-                    shortest_distance(warehouse, pickup, station_goals, set(), algorithm) for pickup in pickup_goals
+                    shortest_distance(
+                        warehouse,
+                        pickup,
+                        station_goals,
+                        set(),
+                        algorithm,
+                        deadline=deadline,
+                    )
+                    for pickup in pickup_goals
                 )
             return_distance = return_cache[task.shelf_index]
         else:
@@ -485,6 +509,8 @@ def assign_available_tasks(
         return start_time, arrival_time, finish_time, distance_to_pickup
 
     while next_task_index < len(ordered_tasks) or pending_tasks:
+        if deadline is not None and time.perf_counter() >= deadline:
+            raise RuntimeError("Task assignment exceeded the time budget.")
         while next_task_index < len(ordered_tasks) and ordered_tasks[next_task_index].release_time <= decision_time:
             pending_tasks.append(ordered_tasks[next_task_index])
             next_task_index += 1
@@ -584,6 +610,7 @@ def estimate_finish_times(
     tasks_by_agent: dict[int, list[Task]],
     homes: dict[int, Coord],
     algorithm: str,
+    deadline: float | None = None,
 ) -> dict[int, int]:
     estimates: dict[int, int] = {}
     distance_cache: dict[tuple[int, int], int] = {}
@@ -598,7 +625,14 @@ def estimate_finish_times(
             cache_key = (agent_id, task.shelf_index)
             if cache_key not in distance_cache:
                 pickup_goals = warehouse.pickup_positions(task.shelf_index)
-                distance_cache[cache_key] = shortest_distance(warehouse, home, pickup_goals, set(), algorithm)
+                distance_cache[cache_key] = shortest_distance(
+                    warehouse,
+                    home,
+                    pickup_goals,
+                    set(),
+                    algorithm,
+                    deadline=deadline,
+                )
 
             current_time += distance_cache[cache_key] * 2
 
@@ -654,9 +688,10 @@ def build_planning_orders(
     homes: dict[int, Coord],
     station_mode: str,
     algorithm: str,
+    deadline: float | None = None,
 ) -> list[list[int]]:
     agent_ids = sorted(tasks_by_agent)
-    finish_estimates = estimate_finish_times(warehouse, tasks_by_agent, homes, algorithm)
+    finish_estimates = estimate_finish_times(warehouse, tasks_by_agent, homes, algorithm, deadline=deadline)
     release_times = first_release_times(tasks_by_agent)
     task_counts = {agent_id: len(tasks) for agent_id, tasks in tasks_by_agent.items()}
 
@@ -682,7 +717,7 @@ def build_planning_orders(
             candidate_orders.append(rotate_order(default_order, offset))
             candidate_orders.append(rotate_order(list(reversed(default_order)), offset))
 
-    return unique_orders(candidate_orders)[:MAX_PLANNING_ORDER_ATTEMPTS]
+    return unique_orders(candidate_orders)
 
 
 def prepare_planning_inputs(
@@ -693,10 +728,19 @@ def prepare_planning_inputs(
     station_mode: str,
     strategy: str,
     algorithm: str,
+    deadline: float | None = None,
 ) -> tuple[list[Task], dict[int, list[Task]], dict[int, Coord], set[Coord], list[tuple[int, int, int]]]:
     resolved_tasks = tasks
     if mode == "Available":
-        resolved_tasks = assign_available_tasks(warehouse, agent_count, tasks, station_mode, strategy, algorithm)
+        resolved_tasks = assign_available_tasks(
+            warehouse,
+            agent_count,
+            tasks,
+            station_mode,
+            strategy,
+            algorithm,
+            deadline=deadline,
+        )
 
     for task in resolved_tasks:
         if task.agent_id < 0 or task.agent_id >= agent_count:
@@ -817,6 +861,7 @@ def build_agent_plan(
     station_mode: str,
     algorithm: str,
     blocked_cells: set[Coord],
+    deadline: float | None = None,
 ) -> AgentPlan:
     if station_mode == "Set":
         return_goals = {home}
@@ -839,6 +884,7 @@ def build_agent_plan(
                 task.release_time,
                 algorithm,
                 blocked_cells=blocked_cells,
+                deadline=deadline,
             )
             current = path[-1]
             current_time = len(path) - 1
@@ -852,6 +898,7 @@ def build_agent_plan(
             pickup_goals,
             algorithm,
             blocked_cells=blocked_cells,
+            deadline=deadline,
         )
         path = merge_segments(path, to_pickup)
         current = path[-1]
@@ -876,6 +923,7 @@ def build_agent_plan(
             algorithm,
             blocked_cells=blocked_cells,
             goal_available_after=goal_available_after,
+            deadline=deadline,
         )
         path = merge_segments(path, back_home)
         current = path[-1]
@@ -914,6 +962,7 @@ def build_agent_plan_from_state(
     station_mode: str,
     algorithm: str,
     blocked_cells: set[Coord],
+    deadline: float | None = None,
 ) -> AgentPlan:
     return_goals_default = {home} if station_mode == "Set" else set(warehouse.stations)
 
@@ -953,6 +1002,7 @@ def build_agent_plan_from_state(
                 algorithm,
                 blocked_cells=blocked_cells,
                 goal_available_after=goal_available_after,
+                deadline=deadline,
             )
             path = merge_segments(path, return_path)
 
@@ -979,11 +1029,12 @@ def build_agent_plan_from_state(
                 path = wait_until_time(
                     warehouse,
                     reservations,
-                path,
-                release_time,
-                algorithm,
-                blocked_cells=blocked_cells,
-            )
+                    path,
+                    release_time,
+                    algorithm,
+                    blocked_cells=blocked_cells,
+                    deadline=deadline,
+                )
                 current = path[-1]
                 current_time = len(path) - 1
 
@@ -996,6 +1047,7 @@ def build_agent_plan_from_state(
                 pickup_goals,
                 algorithm,
                 blocked_cells=blocked_cells,
+                deadline=deadline,
             )
             path = merge_segments(path, to_pickup)
             current = path[-1]
@@ -1021,6 +1073,7 @@ def build_agent_plan_from_state(
             algorithm,
             blocked_cells=blocked_cells,
             goal_available_after=goal_available_after,
+            deadline=deadline,
         )
         path = merge_segments(path, back_to_station)
         current = path[-1]
@@ -1178,6 +1231,7 @@ def relocate_finished_agent(
     station_release_time: int,
     algorithm: str,
     stats: PlanningStats | None = None,
+    deadline: float | None = None,
 ) -> bool:
     blocker_plan = plans_by_id[blocker_id]
     if not blocker_plan.path:
@@ -1211,6 +1265,7 @@ def relocate_finished_agent(
             parking_goals,
             algorithm,
             goal_available_after=goal_available_after,
+            deadline=deadline,
         )
     except RuntimeError:
         return False
@@ -1226,6 +1281,7 @@ def relocate_finished_agent(
             {blocker_coord},
             algorithm,
             goal_available_after={blocker_coord: station_release_time + 1},
+            deadline=deadline,
         )
     except RuntimeError:
         return False
@@ -1280,6 +1336,7 @@ def build_agent_plans_once(
                     station_mode=station_mode,
                     algorithm=algorithm,
                     blocked_cells=blocked_cells,
+                    deadline=deadline,
                 )
             except RuntimeError:
                 if not allow_soft_collisions:
@@ -1312,6 +1369,7 @@ def build_agent_plans_once(
                     station_release_time=last_use_time,
                     algorithm=algorithm,
                     stats=stats,
+                    deadline=deadline,
                 )
                 if not moved:
                     failed_blocker = blocker_id
@@ -1346,6 +1404,7 @@ def build_agent_plans_from_state_once(
     planning_order: list[int],
     station_mode: str,
     algorithm: str,
+    deadline: float | None = None,
 ) -> list[AgentPlan]:
     station_cells = set(warehouse.stations)
     plans_by_id: dict[int, AgentPlan] = {}
@@ -1365,6 +1424,8 @@ def build_agent_plans_from_state_once(
     }
 
     for index, agent_id in enumerate(planning_order):
+        if deadline is not None and time.perf_counter() >= deadline:
+            raise RuntimeError("Replanning from state exceeded the time budget.")
         pending_agent_ids = set(planning_order[index:])
         reservations = build_reservations_from_state(
             start_positions,
@@ -1392,6 +1453,7 @@ def build_agent_plans_from_state_once(
             station_mode=station_mode,
             algorithm=algorithm,
             blocked_cells=set(),
+            deadline=deadline,
         )
         plans_by_id[agent_id] = plan
 
@@ -1431,6 +1493,7 @@ def return_completed_agents_to_stations(
     plans: list[AgentPlan],
     station_mode: str,
     algorithm: str,
+    deadline: float | None = None,
 ) -> list[AgentPlan]:
     updated_plans = [plan for plan in plans]
     station_cells = set(warehouse.stations)
@@ -1454,6 +1517,7 @@ def return_completed_agents_to_stations(
             len(waited_path) - 1,
             return_goals,
             low_level_algorithm_name(algorithm),
+            deadline=deadline,
         )
         returned_plan = AgentPlan(
             agent_id=plan.agent_id,
@@ -1578,6 +1642,7 @@ def window_path_search(
         low_level_algorithm_name(algorithm),
         blocked_cells=blocked_cells,
         goal_available_after=goal_available_after,
+        deadline=deadline,
     )
 
 
@@ -1649,6 +1714,7 @@ def extend_windowed_agent_progress(
                 wait_target_time,
                 algorithm,
                 blocked_cells=blocked_cells,
+                deadline=deadline,
             )
             segment = merge_segments(segment, wait_path)
             current = segment[-1]
@@ -1689,6 +1755,7 @@ def extend_windowed_agent_progress(
             window_end,
             algorithm,
             blocked_cells=blocked_cells,
+            deadline=deadline,
         )
         segment = merge_segments(segment, wait_path)
 
@@ -1785,7 +1852,7 @@ def build_whca_agent_plans_once(
                 missed_deadlines=progress.missed_deadlines,
             )
         )
-    return return_completed_agents_to_stations(warehouse, plans, station_mode, algorithm)
+    return return_completed_agents_to_stations(warehouse, plans, station_mode, algorithm, deadline=deadline)
 
 
 def build_agent_plans(
@@ -1798,6 +1865,7 @@ def build_agent_plans(
     algorithm: str,
     *,
     stats: PlanningStats | None = None,
+    deadline: float | None = None,
 ) -> list[AgentPlan]:
     _, tasks_by_agent, homes, station_cells, colors = prepare_planning_inputs(
         warehouse,
@@ -1807,8 +1875,16 @@ def build_agent_plans(
         station_mode,
         strategy,
         algorithm,
+        deadline=deadline,
     )
-    planning_orders = build_planning_orders(warehouse, tasks_by_agent, homes, station_mode, algorithm)
+    planning_orders = build_planning_orders(
+        warehouse,
+        tasks_by_agent,
+        homes,
+        station_mode,
+        algorithm,
+        deadline=deadline,
+    )
     use_whca = is_windowed_algorithm(algorithm)
 
     last_error: RuntimeError | None = None
@@ -1825,6 +1901,7 @@ def build_agent_plans(
                     planning_order,
                     station_mode,
                     algorithm,
+                    deadline=deadline,
                 )
             return build_agent_plans_once(
                 warehouse,
@@ -1837,6 +1914,7 @@ def build_agent_plans(
                 algorithm,
                 allow_soft_collisions=False,
                 stats=stats,
+                deadline=deadline,
             )
         except RuntimeError as exc:
             last_error = exc
@@ -1859,6 +1937,7 @@ def build_agent_plans_from_state(
     colors: list[tuple[int, int, int]],
     station_mode: str,
     algorithm: str,
+    deadline: float | None = None,
 ) -> list[AgentPlan]:
     ordering_positions = {agent_id: start_positions[agent_id] for agent_id in tasks_by_agent}
     planning_orders = build_planning_orders(
@@ -1867,6 +1946,7 @@ def build_agent_plans_from_state(
         ordering_positions,
         station_mode,
         algorithm,
+        deadline=deadline,
     )
 
     last_error: RuntimeError | None = None
@@ -1885,6 +1965,7 @@ def build_agent_plans_from_state(
                 planning_order=planning_order,
                 station_mode=station_mode,
                 algorithm=algorithm,
+                deadline=deadline,
             )
         except RuntimeError as exc:
             last_error = exc
@@ -1906,10 +1987,10 @@ def build_relaxed_agent_plans(
     strategy: str,
     algorithm: str,
     *,
-    max_order_attempts: int | None = None,
     time_budget_seconds: float | None = None,
     soft_max_expansions: int | None = None,
     stats: PlanningStats | None = None,
+    deadline: float | None = None,
 ) -> list[AgentPlan]:
     _, tasks_by_agent, homes, station_cells, colors = prepare_planning_inputs(
         warehouse,
@@ -1919,14 +2000,20 @@ def build_relaxed_agent_plans(
         station_mode,
         strategy,
         algorithm,
+        deadline=deadline,
     )
-    planning_orders = build_planning_orders(warehouse, tasks_by_agent, homes, station_mode, algorithm)
-    if max_order_attempts is not None:
-        planning_orders = planning_orders[: max(1, max_order_attempts)]
+    planning_orders = build_planning_orders(
+        warehouse,
+        tasks_by_agent,
+        homes,
+        station_mode,
+        algorithm,
+        deadline=deadline,
+    )
     use_whca = is_windowed_algorithm(algorithm)
-    deadline = None
-    if time_budget_seconds is not None:
-        deadline = time.perf_counter() + max(0.0, time_budget_seconds)
+    effective_deadline = deadline
+    if effective_deadline is None and time_budget_seconds is not None:
+        effective_deadline = time.perf_counter() + max(0.0, time_budget_seconds)
 
     best_plans: list[AgentPlan] | None = None
     best_score: tuple[int, int, int] | None = None
@@ -1935,7 +2022,7 @@ def build_relaxed_agent_plans(
     for attempt_index, planning_order in enumerate(planning_orders):
         if attempt_index > 0 and stats is not None:
             stats.note_replan()
-        if deadline is not None and time.perf_counter() >= deadline:
+        if effective_deadline is not None and time.perf_counter() >= effective_deadline:
             last_error = RuntimeError("Fallback planning exceeded the time budget.")
             break
         try:
@@ -1950,7 +2037,7 @@ def build_relaxed_agent_plans(
                     algorithm,
                     allow_soft_collisions=True,
                     soft_max_expansions=soft_max_expansions,
-                    deadline=deadline,
+                    deadline=effective_deadline,
                 )
             else:
                 plans = build_agent_plans_once(
@@ -1964,7 +2051,7 @@ def build_relaxed_agent_plans(
                     algorithm,
                     allow_soft_collisions=True,
                     soft_max_expansions=soft_max_expansions,
-                    deadline=deadline,
+                    deadline=effective_deadline,
                     stats=stats,
                 )
         except RuntimeError as exc:

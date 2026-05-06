@@ -51,10 +51,6 @@ class BatchConfig:
         return self.estimated_release_horizon_steps
 
     @property
-    def max_replans(self) -> int:
-        return self.size.max_replans
-
-    @property
     def max_open_tasks_on_shelves(self) -> int:
         return self.size.shelf_count
 
@@ -118,8 +114,8 @@ class ScenarioConfig:
     wave_zone: str
     wave_radius: int
     set_assignment_policy: str
-    max_replans: int
     max_open_tasks_on_shelves: int
+    max_simulation_time_seconds: int
     failure_probability: float
     failure_duration_min: int
     failure_duration_max: int

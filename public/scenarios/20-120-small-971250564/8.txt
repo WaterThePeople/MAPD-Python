@@ -1,4 +1,4 @@
-ID: 20-120-small-971250564-8
+﻿ID: 20-120-small-971250564-8
 Seed: 971250564
 
 Size: Small
@@ -15,11 +15,9 @@ Tasks: 120
 MaxOpenTasksOnShelves: 120
 
 Influx: Burst
-Lambda: 0.52
 BurstAmount: 36
 BurstStartStep: 92
 BurstDurationSteps: 46
-BurstAmplitude: 3.00
 
 SpatialDistribution: Wave
 HotspotShelfShare: 0.10
@@ -28,7 +26,7 @@ WaveZone: Center
 WaveRadius: 12
 
 DeadlineSlack: 0.50
-MaxReplans: 5
+MaxSimulationTimeSeconds: 240
 
 FailureProbability: 0.10%
 FailureDurationMin: 5
@@ -156,3 +154,4 @@ Task Agent Shelf Time Deadline
 118 17 32 221 290
 119 18 93 228 252
 120 19 89 229 271
+

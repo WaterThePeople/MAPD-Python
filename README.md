@@ -63,7 +63,7 @@ Example:
 `public/scenarios/10-79-small-123456/`
 
 For every provided layout the generator creates all combinations of:
-- `Influx`: `Random`, `Poisson`, `Burst`
+- `Influx`: `Random`, `Gaussian`, `Burst`
 - `SpatialDistribution`: `Uniform`, `Hotspot`, `Wave`
 
 That means `9` scenarios per layout.

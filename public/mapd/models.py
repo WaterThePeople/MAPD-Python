@@ -32,16 +32,9 @@ class AgentPlan:
 @dataclass
 class PlanningStats:
     replans: int = 0
-    max_replans: int | None = None
 
     def note_replan(self) -> None:
-        if self.max_replans is not None and self.replans >= self.max_replans:
-            raise PlanningLimitExceeded(f"Exceeded scenario replan budget ({self.max_replans}).")
         self.replans += 1
-
-
-class PlanningLimitExceeded(RuntimeError):
-    pass
 
 
 @dataclass(frozen=True)
@@ -67,7 +60,7 @@ class ScenarioMetadata:
     wave_radius: int | None = None
     deadline_slack_policy: str | None = None
     deadline_slack: float | None = None
-    max_replans: int | None = None
+    max_simulation_time_seconds: int | None = None
     failure_probability: float | None = None
     failure_duration_min: int | None = None
     failure_duration_max: int | None = None

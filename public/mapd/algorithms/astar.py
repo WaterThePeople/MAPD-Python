@@ -9,6 +9,7 @@ class AStarAlgorithm:
     def search(self, problem: SearchProblem[StateT]) -> list[StateT]:
         heuristic = problem.heuristic or (lambda _: 0)
         tie_breaker_value = problem.tie_breaker or (lambda _: 0)
+        should_abort = problem.should_abort or (lambda: False)
         frontier: list[tuple[int, int, int, int, StateT]] = [
             (heuristic(problem.start), tie_breaker_value(problem.start), 0, 0, problem.start)
         ]
@@ -17,6 +18,8 @@ class AStarAlgorithm:
         tie_breaker = 0
 
         while frontier:
+            if should_abort():
+                raise RuntimeError("A* path search exceeded the time budget.")
             _, _, current_cost, _, current = heapq.heappop(frontier)
             if current_cost != cost_so_far.get(current):
                 continue

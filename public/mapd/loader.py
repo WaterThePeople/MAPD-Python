@@ -8,7 +8,7 @@ from mapd.paths import LAYOUTS_ROOT
 from mapd.warehouse import WarehouseMap
 
 SUPPORTED_LAYOUT_SIZES = {"small", "medium", "large"}
-SUPPORTED_INFLUX_TYPES = {"random": "Random", "poisson": "Poisson", "burst": "Burst"}
+SUPPORTED_INFLUX_TYPES = {"random": "Random", "gaussian": "Gaussian", "burst": "Burst"}
 SUPPORTED_SPATIAL_DISTRIBUTIONS = {
     "uniform": "Uniform",
     "hotspot": "Hotspot",
@@ -444,7 +444,7 @@ def _parse_scenario_metadata(text: str) -> ScenarioMetadata:
         wave_radius=_parse_optional_int_header(text, "WaveRadius", min_value=0),
         deadline_slack_policy=_parse_optional_text_header(text, "DeadlineSlackPolicy"),
         deadline_slack=_parse_optional_float_header(text, "DeadlineSlack", min_value=0.0),
-        max_replans=_parse_optional_int_header(text, "MaxReplans", min_value=0),
+        max_simulation_time_seconds=_parse_optional_int_header(text, "MaxSimulationTimeSeconds", min_value=1),
         failure_probability=_parse_optional_probability_header(text, "FailureProbability"),
         failure_duration_min=_parse_optional_int_header(text, "FailureDurationMin", min_value=0),
         failure_duration_max=_parse_optional_int_header(text, "FailureDurationMax", min_value=0),
@@ -460,14 +460,11 @@ def _validate_scenario_metadata(metadata: ScenarioMetadata) -> None:
     if metadata.hotspot_task_share is not None and metadata.hotspot_task_share > 1.0:
         raise ValueError("Scenario header 'HotspotTaskShare' must be <= 1.0.")
 
-    if metadata.influx == "Poisson" and metadata.lambda_value is None:
-        raise ValueError("Scenario header 'Lambda' is required when Influx is Poisson.")
     if metadata.influx == "Burst":
         required_burst_headers = {
             "BurstAmount": metadata.burst_amount,
             "BurstStartStep": metadata.burst_start_step,
             "BurstDurationSteps": metadata.burst_duration_steps,
-            "BurstAmplitude": metadata.burst_amplitude,
         }
         missing_headers = [label for label, value in required_burst_headers.items() if value is None]
         if missing_headers:

@@ -20,7 +20,6 @@ from mapd.loader import (
 )
 from mapd.models import (
     FAILURE_MODEL_CHOICES,
-    PlanningLimitExceeded,
     PlanningStats,
     ScenarioDefinition,
     ScenarioVariant,
@@ -64,9 +63,9 @@ DEFAULT_RENDER_GIF = False
 DEFAULT_DEBUGGING = False
 DEFAULT_FALLBACK_GIF = False
 DEFAULT_DEBUG_FRAMES_ROOT = DEBUGGING_ROOT
-AUTOMATIC_RELAXED_ORDER_LIMIT = 10
 FALLBACK_GIF_TIME_BUDGET_SECONDS = 20.0
 FALLBACK_GIF_SOFT_MAX_EXPANSIONS = 100_000
+DEFAULT_VARIANT_TIME_BUDGET_SECONDS = 240.0
 
 STATUS_SOLVED = "Solved"
 STATUS_NO_SOLUTION = "No solution"
@@ -279,10 +278,10 @@ def run_relaxed_simulation(
     render_gif: bool,
     debug_frames_dir: Path | None = None,
     *,
-    max_order_attempts: int = AUTOMATIC_RELAXED_ORDER_LIMIT,
     time_budget_seconds: float = FALLBACK_GIF_TIME_BUDGET_SECONDS,
     soft_max_expansions: int = FALLBACK_GIF_SOFT_MAX_EXPANSIONS,
     stats: PlanningStats | None = None,
+    deadline: float | None = None,
 ) -> list:
     plans = build_relaxed_agent_plans(
         warehouse,
@@ -292,10 +291,10 @@ def run_relaxed_simulation(
         station_mode,
         strategy,
         algorithm,
-        max_order_attempts=max_order_attempts,
         time_budget_seconds=time_budget_seconds,
         soft_max_expansions=soft_max_expansions,
         stats=stats,
+        deadline=deadline,
     )
     return plans
 
@@ -517,6 +516,7 @@ def run_simulation(
     render_gif: bool,
     debug_frames_dir: Path | None = None,
     stats: PlanningStats | None = None,
+    deadline: float | None = None,
 ) -> list:
     plans = build_agent_plans(
         warehouse,
@@ -527,6 +527,7 @@ def run_simulation(
         strategy,
         algorithm,
         stats=stats,
+        deadline=deadline,
     )
     return plans
 
@@ -548,10 +549,20 @@ def execute_variant(
     render_gif: bool,
     debug_frames_dir: Path | None = None,
     *,
-    max_replans: int | None = None,
+    time_budget_seconds: float = DEFAULT_VARIANT_TIME_BUDGET_SECONDS,
 ) -> VariantExecutionResult:
-    stats = PlanningStats(max_replans=max_replans)
+    stats = PlanningStats()
     started_at = time.perf_counter()
+    resolved_time_budget_seconds = (
+        metadata.max_simulation_time_seconds
+        if getattr(metadata, "max_simulation_time_seconds", None) is not None
+        else time_budget_seconds
+    )
+    variant_deadline = (
+        started_at + max(0.0, resolved_time_budget_seconds)
+        if resolved_time_budget_seconds is not None
+        else None
+    )
 
     try:
         ensure_variant_possible(warehouse, agent_count, tasks, mode)
@@ -584,20 +595,21 @@ def execute_variant(
             render_gif,
             debug_frames_dir,
             stats=stats,
-        )
-    except PlanningLimitExceeded as exc:
-        return VariantExecutionResult(
-            status=STATUS_NO_SOLUTION,
-            details=str(exc),
-            makespan=None,
-            plans=None,
-            collisions=None,
-            replans=stats.replans,
-            simulation_time_seconds=time.perf_counter() - started_at,
-            failure_count=0,
-            failure_delay_steps=0,
+            deadline=variant_deadline,
         )
     except RuntimeError as exc:
+        if variant_deadline is not None and time.perf_counter() >= variant_deadline:
+            return VariantExecutionResult(
+                status=STATUS_NO_SOLUTION,
+                details=str(exc),
+                makespan=None,
+                plans=None,
+                collisions=None,
+                replans=stats.replans,
+                simulation_time_seconds=time.perf_counter() - started_at,
+                failure_count=0,
+                failure_delay_steps=0,
+            )
         try:
             stats.note_replan()
             relaxed_plans = run_relaxed_simulation(
@@ -615,18 +627,7 @@ def execute_variant(
                 render_gif,
                 debug_frames_dir,
                 stats=stats,
-            )
-        except PlanningLimitExceeded as relaxed_limit_exc:
-            return VariantExecutionResult(
-                status=STATUS_NO_SOLUTION,
-                details=f"{exc} {relaxed_limit_exc}",
-                makespan=None,
-                plans=None,
-                collisions=None,
-                replans=stats.replans,
-                simulation_time_seconds=time.perf_counter() - started_at,
-                failure_count=0,
-                failure_delay_steps=0,
+                deadline=variant_deadline,
             )
         except RuntimeError as relaxed_exc:
             return VariantExecutionResult(
@@ -649,6 +650,7 @@ def execute_variant(
                 failure_model,
                 station_mode,
                 algorithm,
+                deadline=variant_deadline,
             )
             relaxed_makespan = render_or_measure(
                 warehouse,
@@ -693,6 +695,7 @@ def execute_variant(
             failure_model,
             station_mode,
             algorithm,
+            deadline=variant_deadline,
         )
         makespan = render_or_measure(
             warehouse,
@@ -992,7 +995,6 @@ def run_suite_variant_task(task: SuiteVariantTask) -> SuiteVariantOutcome:
         task.frame_duration,
         progress=task.render_gif,
         render_gif=task.render_gif,
-        max_replans=task.definition.metadata.max_replans,
     )
     station_cells = set(warehouse.stations)
     return SuiteVariantOutcome(
@@ -1220,7 +1222,6 @@ def run_single_scenario(args: argparse.Namespace) -> None:
         progress=render_gif,
         render_gif=render_gif,
         debug_frames_dir=debug_frames_dir,
-        max_replans=definition.metadata.max_replans,
     )
     print(
         "  "

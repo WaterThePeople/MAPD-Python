@@ -49,7 +49,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "Generate a batch of MAPD scenarios for every combination of "
-            "Influx={Random,Poisson,Burst} and SpatialDistribution={Uniform,Hotspot,Wave}."
+            "Influx={Random,Gaussian,Burst} and SpatialDistribution={Uniform,Hotspot,Wave}."
         )
     )
     parser.add_argument("agents", type=positive_int, help="Number of agents.")

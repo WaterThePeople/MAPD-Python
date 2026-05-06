@@ -17,10 +17,11 @@ DEFAULT_BURST_SHARE = 0.30
 DEFAULT_BURST_START_SHARE = 0.40
 DEFAULT_BURST_DURATION_SHARE = 0.20
 DEFAULT_BURST_AMPLITUDE = 3.0
+DEFAULT_MAX_SIMULATION_TIME_SECONDS = 240
 DEFAULT_FAILURE_PROBABILITY = 0.001
 DEFAULT_FAILURE_DURATION_MIN = 5
 DEFAULT_FAILURE_DURATION_MAX = 20
-INFLUX_CHOICES = ("Random", "Poisson", "Burst")
+INFLUX_CHOICES = ("Random", "Gaussian", "Burst")
 SPATIAL_DISTRIBUTIONS = ("Uniform", "Hotspot", "Wave")
 
 
@@ -31,7 +32,6 @@ class SizeProfile:
     max_agents: int
     station_count: int
     shelf_count: int
-    max_replans: int
     default_wave_radius: int
 
 
@@ -42,7 +42,6 @@ SIZE_PROFILES = {
         max_agents=20,
         station_count=20,
         shelf_count=120,
-        max_replans=5,
         default_wave_radius=12,
     ),
     "medium": SizeProfile(
@@ -51,7 +50,6 @@ SIZE_PROFILES = {
         max_agents=60,
         station_count=60,
         shelf_count=360,
-        max_replans=10,
         default_wave_radius=12,
     ),
     "large": SizeProfile(
@@ -60,7 +58,6 @@ SIZE_PROFILES = {
         max_agents=120,
         station_count=120,
         shelf_count=720,
-        max_replans=15,
         default_wave_radius=18,
     ),
 }

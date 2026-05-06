@@ -7,11 +7,14 @@ class BFSAlgorithm:
     name = "BFS"
 
     def search(self, problem: SearchProblem[StateT]) -> list[StateT]:
+        should_abort = problem.should_abort or (lambda: False)
         frontier = deque([problem.start])
         visited = {problem.start}
         came_from: dict[StateT, StateT] = {}
 
         while frontier:
+            if should_abort():
+                raise RuntimeError("BFS path search exceeded the time budget.")
             current = frontier.popleft()
             if problem.is_goal(current):
                 return reconstruct_path(came_from, current)

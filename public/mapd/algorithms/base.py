@@ -10,6 +10,7 @@ GoalFn = Callable[[StateT], bool]
 HeuristicFn = Callable[[StateT], int]
 NeighborFn = Callable[[StateT], Iterable[StateT]]
 TieBreakerFn = Callable[[StateT], int]
+AbortFn = Callable[[], bool]
 
 
 @dataclass(frozen=True)
@@ -19,6 +20,7 @@ class SearchProblem(Generic[StateT]):
     neighbors: NeighborFn[StateT]
     heuristic: HeuristicFn[StateT] | None = None
     tie_breaker: TieBreakerFn[StateT] | None = None
+    should_abort: AbortFn | None = None
 
 
 class PathfindingAlgorithm(Protocol[StateT]):

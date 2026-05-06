@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import heapq
+import time
 from dataclasses import dataclass
 from functools import lru_cache
 
@@ -28,6 +29,7 @@ class SIPPAlgorithm:
         max_time: int,
         blocked_cells: set[Coord] | None = None,
         goal_available_after: dict[Coord, int] | None = None,
+        deadline: float | None = None,
     ) -> list[Coord]:
         if blocked_cells is None:
             blocked_cells = set()
@@ -85,6 +87,8 @@ class SIPPAlgorithm:
         insertion_order = 0
 
         while frontier:
+            if deadline is not None and time.perf_counter() >= deadline:
+                raise RuntimeError("SIPP path search exceeded the time budget.")
             _, _, current_time, _, current_state = heapq.heappop(frontier)
             if current_time != arrival_times.get(current_state):
                 continue
