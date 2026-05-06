@@ -43,6 +43,7 @@ from mapd.report_metrics import (
 from mapd.renderer import render_frames
 from mapd.results_workbook import (
     COMPARISON_HEADERS,
+    build_suite_workbook_sheets,
     build_comparison_row,
     write_xlsx_workbook,
 )
@@ -1148,7 +1149,7 @@ def run_suite(args: argparse.Namespace) -> None:
     else:
         results_name = suite_name
     results_path = Path(args.results_dir) / f"{safe_results_name(results_name)}.xlsx"
-    write_xlsx_workbook(results_path, [("Overall Comparison", comparison_rows)])
+    write_xlsx_workbook(results_path, build_suite_workbook_sheets(comparison_rows))
     print(f"[done] Saved results: {results_path}")
 
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from pathlib import Path
+from xml.etree import ElementTree as ET
 from xml.sax.saxutils import escape
 from zipfile import ZIP_DEFLATED, ZipFile
 
@@ -52,6 +53,43 @@ COMPARISON_HEADERS = [
     "replans",
     "sum of distances",
     "simulation time",
+]
+
+GEOMETRY_SHEETS = [
+    ("Square", "square"),
+    ("Hexagon", "hexagon"),
+    ("Triangle", "triangle"),
+]
+
+INFLUX_SHEETS = [
+    ("Random", "random"),
+    ("Gaussian", "gaussian"),
+    ("Burst", "burst"),
+]
+
+SPATIAL_SHEETS = [
+    ("Uniform", "uniform"),
+    ("Hotspot", "hotspot"),
+    ("Wave", "wave"),
+]
+
+STATUS_SHEETS = [
+    ("Solved", "solved"),
+    ("Unsolved", "unsolved"),
+]
+
+SORT_PRIORITY = [
+    ("missed deadlines", False),
+    ("missed deadline time", False),
+    ("collisions", False),
+    ("makespan", False),
+    ("throughput", True),
+    ("simulation time", False),
+    ("replans", False),
+    ("number of waits", False),
+    ("sum of distances", False),
+    ("failures", False),
+    ("failure duration", False),
 ]
 
 def build_comparison_row(
@@ -106,6 +144,72 @@ def build_comparison_row(
     ]
 
 
+def normalize_text(value: object) -> str:
+    return str(value).strip().lower()
+
+
+def metric_value(value: object) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    try:
+        return float(str(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def row_cell_value(row: list[object], column_index: int) -> object:
+    if column_index >= len(row):
+        return None
+    return row[column_index]
+
+
+def filter_rows_by_column_value(
+    rows: list[list[object]],
+    column_name: str,
+    accepted_value: str,
+) -> list[list[object]]:
+    if not rows:
+        return rows
+
+    header = rows[0]
+    if column_name not in header:
+        return [header]
+
+    column_index = header.index(column_name)
+    filtered_rows = [header]
+    for row in rows[1:]:
+        if column_index >= len(row):
+            continue
+        cell_value = row[column_index]
+        if normalize_text(cell_value) == accepted_value:
+            filtered_rows.append(row)
+    return filtered_rows
+
+
+def build_filtered_sheets(
+    rows: list[list[object]],
+    column_name: str,
+    labels: list[tuple[str, str]],
+) -> list[tuple[str, list[list[object]]]]:
+    return [
+        (sheet_name, filter_rows_by_column_value(rows, column_name, accepted_value))
+        for sheet_name, accepted_value in labels
+    ]
+
+
+def build_suite_workbook_sheets(rows: list[list[object]]) -> list[tuple[str, list[list[object]]]]:
+    sheets: list[tuple[str, list[list[object]]]] = [("Overall Comparison", rows)]
+    sheets.extend(build_filtered_sheets(rows, "type", GEOMETRY_SHEETS))
+    sheets.extend(build_filtered_sheets(rows, "influx", INFLUX_SHEETS))
+    sheets.extend(build_filtered_sheets(rows, "spatial distribution", SPATIAL_SHEETS))
+    sheets.extend(build_filtered_sheets(rows, "status", STATUS_SHEETS))
+    return sheets
+
+
 def column_name(index: int) -> str:
     name = ""
     current = index
@@ -146,20 +250,33 @@ def column_widths(rows: list[list[object]]) -> list[float]:
     return widths
 
 
-def sort_rows_by_makespan(rows: list[list[object]]) -> list[list[object]]:
+def sort_rows_by_metrics(rows: list[list[object]]) -> list[list[object]]:
     if len(rows) <= 1:
         return rows
 
     header = rows[0]
-    if "makespan" not in header:
+    sort_columns = [
+        (header.index(column_name), descending)
+        for column_name, descending in SORT_PRIORITY
+        if column_name in header
+    ]
+    if not sort_columns:
         return rows
 
-    makespan_index = header.index("makespan")
     data_rows = list(enumerate(rows[1:]))
+
+    def metric_sort_key(value: object, descending: bool) -> tuple[int, float]:
+        numeric = metric_value(value)
+        if numeric is None:
+            return (1, 0.0)
+        return (0, -numeric if descending else numeric)
+
     data_rows.sort(
         key=lambda item: (
-            item[1][makespan_index] is None,
-            float("inf") if item[1][makespan_index] is None else item[1][makespan_index],
+            *(
+                metric_sort_key(row_cell_value(item[1], column_index), descending)
+                for column_index, descending in sort_columns
+            ),
             item[0],
         )
     )
@@ -372,9 +489,45 @@ def styles_xml() -> str:
     )
 
 
+def parse_numeric_cell(value: str) -> object:
+    try:
+        numeric = float(value)
+    except ValueError:
+        return value
+    if numeric.is_integer():
+        return int(numeric)
+    return numeric
+
+
+def read_xlsx_sheet_rows(path: Path, sheet_index: int = 1) -> list[list[object]]:
+    namespace = {"main": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
+    sheet_path = f"xl/worksheets/sheet{sheet_index}.xml"
+
+    with ZipFile(path, "r") as workbook:
+        sheet_xml_bytes = workbook.read(sheet_path)
+
+    root = ET.fromstring(sheet_xml_bytes)
+    rows: list[list[object]] = []
+
+    for row_element in root.findall(".//main:sheetData/main:row", namespace):
+        row_values: list[object] = []
+        for cell in row_element.findall("main:c", namespace):
+            cell_type = cell.attrib.get("t")
+            if cell_type == "inlineStr":
+                text = cell.findtext("main:is/main:t", default="", namespaces=namespace)
+                row_values.append(text)
+                continue
+
+            value = cell.findtext("main:v", default="", namespaces=namespace)
+            row_values.append(parse_numeric_cell(value))
+        rows.append(row_values)
+
+    return rows
+
+
 def write_xlsx_workbook(path: Path, sheets: list[tuple[str, list[list[object]]]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    normalized_sheets = [(name, sort_rows_by_makespan(rows)) for name, rows in sheets]
+    normalized_sheets = [(name, sort_rows_by_metrics(rows)) for name, rows in sheets]
     sheet_names = [name for name, _ in normalized_sheets]
     with ZipFile(path, "w", compression=ZIP_DEFLATED) as workbook:
         workbook.writestr("[Content_Types].xml", content_types_xml(len(normalized_sheets)))
