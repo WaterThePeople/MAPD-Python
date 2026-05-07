@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from pathlib import Path
+import re
 from xml.etree import ElementTree as ET
 from xml.sax.saxutils import escape
 from zipfile import ZIP_DEFLATED, ZipFile
@@ -167,6 +168,15 @@ def row_cell_value(row: list[object], column_index: int) -> object:
     return row[column_index]
 
 
+def status_sort_rank(value: object) -> int:
+    normalized = normalize_text(value)
+    if normalized == "solved":
+        return 0
+    if normalized == "unsolved":
+        return 1
+    return 2
+
+
 def filter_rows_by_column_value(
     rows: list[list[object]],
     column_name: str,
@@ -260,6 +270,7 @@ def sort_rows_by_metrics(rows: list[list[object]]) -> list[list[object]]:
         for column_name, descending in SORT_PRIORITY
         if column_name in header
     ]
+    status_index = header.index("status") if "status" in header else None
     if not sort_columns:
         return rows
 
@@ -273,6 +284,7 @@ def sort_rows_by_metrics(rows: list[list[object]]) -> list[list[object]]:
 
     data_rows.sort(
         key=lambda item: (
+            status_sort_rank(row_cell_value(item[1], status_index)) if status_index is not None else 0,
             *(
                 metric_sort_key(row_cell_value(item[1], column_index), descending)
                 for column_index, descending in sort_columns
@@ -499,6 +511,17 @@ def parse_numeric_cell(value: str) -> object:
     return numeric
 
 
+def cell_reference_to_column_index(reference: str) -> int:
+    match = re.match(r"([A-Z]+)", reference.upper())
+    if match is None:
+        return 0
+    column_letters = match.group(1)
+    index = 0
+    for letter in column_letters:
+        index = index * 26 + (ord(letter) - ord("A") + 1)
+    return max(0, index - 1)
+
+
 def read_xlsx_sheet_rows(path: Path, sheet_index: int = 1) -> list[list[object]]:
     namespace = {"main": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
     sheet_path = f"xl/worksheets/sheet{sheet_index}.xml"
@@ -512,14 +535,19 @@ def read_xlsx_sheet_rows(path: Path, sheet_index: int = 1) -> list[list[object]]
     for row_element in root.findall(".//main:sheetData/main:row", namespace):
         row_values: list[object] = []
         for cell in row_element.findall("main:c", namespace):
+            reference = cell.attrib.get("r", "")
+            column_index = cell_reference_to_column_index(reference)
+            if column_index >= len(row_values):
+                row_values.extend([None] * (column_index + 1 - len(row_values)))
+
             cell_type = cell.attrib.get("t")
             if cell_type == "inlineStr":
                 text = cell.findtext("main:is/main:t", default="", namespaces=namespace)
-                row_values.append(text)
+                row_values[column_index] = text
                 continue
 
             value = cell.findtext("main:v", default="", namespaces=namespace)
-            row_values.append(parse_numeric_cell(value))
+            row_values[column_index] = parse_numeric_cell(value)
         rows.append(row_values)
 
     return rows
