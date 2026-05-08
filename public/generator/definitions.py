@@ -41,10 +41,10 @@ class BatchConfig:
     def deadline_slack(self) -> float:
         density = self.agents / self.size.max_agents
         if density <= (1 / 3):
-            return 0.20
+            return 0.25
         if density <= (2 / 3):
-            return 0.35
-        return 0.50
+            return 0.50
+        return 0.75
 
     @property
     def release_horizon_steps(self) -> int:
@@ -129,10 +129,10 @@ class ScenarioConfig:
     def deadline_slack(self) -> float:
         density = self.agents / self.size.max_agents
         if density <= (1 / 3):
-            return 0.20
+            return 0.25
         if density <= (2 / 3):
-            return 0.35
-        return 0.50
+            return 0.50
+        return 0.75
 
     @property
     def release_horizon_steps(self) -> int:

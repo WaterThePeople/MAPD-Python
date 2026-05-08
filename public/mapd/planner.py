@@ -13,9 +13,9 @@ from mapd.strategy import get_strategy
 from mapd.warehouse import WarehouseMap
 
 SOFT_COLLISION_PENALTY = 1000
-WHCA_WINDOW_SIZE = 16
-WHCA_MAX_TIME_FACTOR = 12
-WHCA_MIN_STALL_WINDOWS = 10
+WHCA_WINDOW_SIZE = 32
+WHCA_MAX_TIME_FACTOR = 24
+WHCA_MIN_STALL_WINDOWS = 24
 
 
 @dataclass

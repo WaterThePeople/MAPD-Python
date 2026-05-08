@@ -25,7 +25,7 @@ HotspotTaskShare: 0.70
 WaveZone: Center
 WaveRadius: 12
 
-DeadlineSlack: 0.20
+DeadlineSlack: 0.25
 MaxSimulationTimeSeconds: 240
 
 FailureProbability: 0.01%
