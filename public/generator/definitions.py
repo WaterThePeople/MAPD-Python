@@ -147,6 +147,7 @@ class ShelfDescriptor:
     coord: Coord
     pickup_positions: tuple[Coord, ...]
     station_distance: int
+    delivery_distance: int
 
 
 @dataclass(frozen=True)

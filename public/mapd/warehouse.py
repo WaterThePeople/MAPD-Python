@@ -23,7 +23,7 @@ class WarehouseMap:
         if layout_type not in self.SUPPORTED_LAYOUT_TYPES:
             raise ValueError(f"Unsupported layout type: {layout_type}")
 
-        allowed = {"E", "S", "#"}
+        allowed = {"E", "S", "#", "D"}
         invalid = set()
         for row in rows:
             for cell in row:
@@ -39,10 +39,12 @@ class WarehouseMap:
         self.layout_type = layout_type
         self._neighbors_cache: dict[Coord, tuple[Coord, ...]] = {}
         self._pickup_positions_cache: dict[int, frozenset[Coord]] = {}
+        self._delivery_positions_cache: frozenset[Coord] | None = None
 
         self.traversable: set[Coord] = set()
         self.stations: list[Coord] = []
         self.shelves: set[Coord] = set()
+        self.delivery_cells: set[Coord] = set()
 
         for row_idx, row in enumerate(rows):
             for col_idx, cell in enumerate(row):
@@ -53,6 +55,8 @@ class WarehouseMap:
                     self.stations.append(coord)
                 if cell == "#":
                     self.shelves.add(coord)
+                if cell == "D":
+                    self.delivery_cells.add(coord)
 
         if shelf_slots is None:
             self.shelf_slots = sorted(self.shelves, key=self.coord_to_index)
@@ -123,6 +127,22 @@ class WarehouseMap:
             raise ValueError(f"Shelf {shelf_index} has no accessible pickup position.")
         self._pickup_positions_cache[shelf_index] = positions
         return positions
+
+    def delivery_positions(self) -> frozenset[Coord]:
+        if self._delivery_positions_cache is not None:
+            return self._delivery_positions_cache
+
+        positions = {
+            next_coord
+            for delivery_coord in self.delivery_cells
+            for next_coord in self._candidate_neighbors(delivery_coord)
+            if next_coord in self.traversable
+        }
+        if not positions:
+            raise ValueError("Layout has no accessible delivery position.")
+
+        self._delivery_positions_cache = frozenset(positions)
+        return self._delivery_positions_cache
 
     def _candidate_neighbors(self, coord: Coord) -> list[Coord]:
         if self.layout_type == "hexagon":

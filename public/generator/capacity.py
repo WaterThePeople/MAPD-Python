@@ -19,11 +19,15 @@ def expected_service_steps_for_agent(
     normalized_weights_by_shelf: dict[int, float],
 ) -> float:
     expected_steps = 0.0
+    delivery_distance_by_shelf = {
+        descriptor.shelf_index: descriptor.delivery_distance
+        for descriptor in layout.shelf_descriptors
+    }
     for shelf_index, weight in normalized_weights_by_shelf.items():
         distance_to_pickup = layout.distances_by_agent[agent_id][shelf_index]
         if distance_to_pickup is None:
             continue
-        expected_steps += weight * (distance_to_pickup * 2)
+        expected_steps += weight * (distance_to_pickup + delivery_distance_by_shelf[shelf_index])
     return expected_steps
 
 

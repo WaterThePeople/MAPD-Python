@@ -116,6 +116,10 @@ def generate_tasks(
     active_open_tasks: list[int] = []
     tasks: list[Task] = []
     last_release_time = 0
+    descriptors_by_shelf = {
+        descriptor.shelf_index: descriptor
+        for descriptor in layout.shelf_descriptors
+    }
 
     for task_index, nominal_release in enumerate(release_times):
         agent_id = choose_agent(config.set_assignment_policy, task_index, assignment_counts, rng)
@@ -154,7 +158,7 @@ def generate_tasks(
 
         predicted_start = max(release_time, agent_available_times[agent_id])
         predicted_pickup_time = predicted_start + distance_to_pickup
-        base_service_time = distance_to_pickup * 2
+        base_service_time = distance_to_pickup + descriptors_by_shelf[shelf_index].delivery_distance
         deadline = release_time + max(1, math.ceil(base_service_time * (1.0 + config.deadline_slack)))
         last_release_time = release_time
 

@@ -23,6 +23,7 @@ class WindowAgentProgress:
     path: list[Coord]
     task_index: int = 0
     carrying: bool = False
+    returning_to_station: bool = False
     pickup_times: dict[int, int] = field(default_factory=dict)
     completion_times: dict[int, int] = field(default_factory=dict)
     missed_deadlines: list[int] = field(default_factory=list)
@@ -437,8 +438,8 @@ def assign_available_tasks(
     homes = assign_home_stations(warehouse, agent_count)
     availability = {}
     distance_cache = {}
-    return_cache = {}
-    station_goals = set(warehouse.stations)
+    delivery_cache = {}
+    delivery_goals = set(warehouse.delivery_positions())
     assigned_tasks = []
     decision_time = 0
 
@@ -485,27 +486,24 @@ def assign_available_tasks(
             )
 
         distance_to_pickup = distance_cache[cache_key]
-        if station_mode == "Available":
-            if task.shelf_index not in return_cache:
-                pickup_goals = warehouse.pickup_positions(task.shelf_index)
-                return_cache[task.shelf_index] = min(
-                    shortest_distance(
-                        warehouse,
-                        pickup,
-                        station_goals,
-                        set(),
-                        algorithm,
-                        deadline=deadline,
-                    )
-                    for pickup in pickup_goals
+        if task.shelf_index not in delivery_cache:
+            pickup_goals = warehouse.pickup_positions(task.shelf_index)
+            delivery_cache[task.shelf_index] = min(
+                shortest_distance(
+                    warehouse,
+                    pickup,
+                    delivery_goals,
+                    set(),
+                    algorithm,
+                    deadline=deadline,
                 )
-            return_distance = return_cache[task.shelf_index]
-        else:
-            return_distance = distance_to_pickup
+                for pickup in pickup_goals
+            )
+        delivery_distance = delivery_cache[task.shelf_index]
 
         start_time = max(availability[agent_id], task.release_time, decision_time)
         arrival_time = start_time + distance_to_pickup
-        finish_time = start_time + distance_to_pickup + return_distance
+        finish_time = start_time + distance_to_pickup + delivery_distance
         return start_time, arrival_time, finish_time, distance_to_pickup
 
     while next_task_index < len(ordered_tasks) or pending_tasks:
@@ -614,6 +612,8 @@ def estimate_finish_times(
 ) -> dict[int, int]:
     estimates: dict[int, int] = {}
     distance_cache: dict[tuple[int, int], int] = {}
+    delivery_cache: dict[int, int] = {}
+    delivery_goals = set(warehouse.delivery_positions())
 
     for agent_id, tasks in tasks_by_agent.items():
         home = homes[agent_id]
@@ -634,7 +634,21 @@ def estimate_finish_times(
                     deadline=deadline,
                 )
 
-            current_time += distance_cache[cache_key] * 2
+            if task.shelf_index not in delivery_cache:
+                pickup_goals = warehouse.pickup_positions(task.shelf_index)
+                delivery_cache[task.shelf_index] = min(
+                    shortest_distance(
+                        warehouse,
+                        pickup,
+                        delivery_goals,
+                        set(),
+                        algorithm,
+                        deadline=deadline,
+                    )
+                    for pickup in pickup_goals
+                )
+
+            current_time += distance_cache[cache_key] + delivery_cache[task.shelf_index]
 
         estimates[agent_id] = current_time
 
@@ -780,6 +794,69 @@ def station_availability(
     return goal_availability(reservations, stations)
 
 
+def station_goals_for_mode(warehouse: WarehouseMap, home: Coord, station_mode: str) -> set[Coord]:
+    return {home} if station_mode == "Set" else set(warehouse.stations)
+
+
+def available_station_goals(
+    reservations: ReservationTable,
+    warehouse: WarehouseMap,
+    home: Coord,
+    station_mode: str,
+) -> tuple[set[Coord], dict[Coord, int]]:
+    goals = station_goals_for_mode(warehouse, home, station_mode)
+    if station_mode == "Available":
+        return station_availability(reservations, goals)
+    return goal_availability(reservations, goals)
+
+
+def should_return_to_station_after_delivery(agent_tasks: list[Task], task_index: int, current_time: int) -> bool:
+    next_index = task_index + 1
+    return next_index >= len(agent_tasks) or agent_tasks[next_index].release_time > current_time
+
+
+def plan_return_to_station(
+    warehouse: WarehouseMap,
+    reservations: ReservationTable,
+    current: Coord,
+    current_time: int,
+    home: Coord,
+    station_mode: str,
+    algorithm: str,
+    blocked_cells: set[Coord],
+    *,
+    soft: bool = False,
+    soft_max_expansions: int | None = None,
+    deadline: float | None = None,
+) -> list[Coord]:
+    return_goals, goal_available_after = available_station_goals(reservations, warehouse, home, station_mode)
+    if not return_goals:
+        raise RuntimeError("No free station available for return.")
+    if soft:
+        return find_soft_path(
+            warehouse,
+            reservations,
+            current,
+            current_time,
+            return_goals,
+            blocked_cells=blocked_cells,
+            goal_available_after=goal_available_after,
+            max_expansions=soft_max_expansions,
+            deadline=deadline,
+        )
+    return find_path(
+        warehouse,
+        reservations,
+        current,
+        current_time,
+        return_goals,
+        algorithm,
+        blocked_cells=blocked_cells,
+        goal_available_after=goal_available_after,
+        deadline=deadline,
+    )
+
+
 def reserve_agent_plan(
     reservations: ReservationTable,
     plan: AgentPlan,
@@ -863,17 +940,13 @@ def build_agent_plan(
     blocked_cells: set[Coord],
     deadline: float | None = None,
 ) -> AgentPlan:
-    if station_mode == "Set":
-        return_goals = {home}
-    else:
-        return_goals = set(warehouse.stations)
-
     current = home
     current_time = 0
     path = [home]
     pickup_times = {}
     completion_times = {}
     missed_deadlines = []
+    delivery_goals = set(warehouse.delivery_positions())
 
     for task_index, task in enumerate(agent_tasks):
         if current_time < task.release_time:
@@ -905,32 +978,38 @@ def build_agent_plan(
         current_time = len(path) - 1
         pickup_times[task.task_id] = current_time
 
-        goal_available_after = None
-        if task_index == len(agent_tasks) - 1:
-            if station_mode == "Available":
-                return_goals, goal_available_after = station_availability(reservations, return_goals)
-                if not return_goals:
-                    raise RuntimeError("No free station available for final return.")
-            else:
-                return_goals, goal_available_after = goal_availability(reservations, return_goals)
-
-        back_home = find_path(
+        to_delivery = find_path(
             warehouse,
             reservations,
             current,
             current_time,
-            return_goals,
+            delivery_goals,
             algorithm,
             blocked_cells=blocked_cells,
-            goal_available_after=goal_available_after,
             deadline=deadline,
         )
-        path = merge_segments(path, back_home)
+        path = merge_segments(path, to_delivery)
         current = path[-1]
         current_time = len(path) - 1
         completion_times[task.task_id] = current_time
         if task.deadline is not None and current_time > task.deadline:
             missed_deadlines.append(task.task_id)
+
+        if should_return_to_station_after_delivery(agent_tasks, task_index, current_time):
+            back_to_station = plan_return_to_station(
+                warehouse,
+                reservations,
+                current,
+                current_time,
+                home,
+                station_mode,
+                algorithm,
+                blocked_cells,
+                deadline=deadline,
+            )
+            path = merge_segments(path, back_to_station)
+            current = path[-1]
+            current_time = len(path) - 1
 
     return AgentPlan(
         agent_id=agent_id,
@@ -964,8 +1043,6 @@ def build_agent_plan_from_state(
     blocked_cells: set[Coord],
     deadline: float | None = None,
 ) -> AgentPlan:
-    return_goals_default = {home} if station_mode == "Set" else set(warehouse.stations)
-
     current = start
     current_time = 0
     path = [start]
@@ -974,6 +1051,8 @@ def build_agent_plan_from_state(
     missed_deadlines: list[int] = []
     delayed_times: set[int] = set()
     failure_start_times: set[int] = set()
+    delivery_goals = set(warehouse.delivery_positions())
+    station_goals = station_goals_for_mode(warehouse, home, station_mode)
 
     if initial_wait > 0:
         if mark_failure_start:
@@ -984,24 +1063,16 @@ def build_agent_plan_from_state(
             delayed_times.add(current_time)
 
     if not agent_tasks:
-        if current not in return_goals_default:
-            goal_available_after = None
-            if station_mode == "Available":
-                return_goals, goal_available_after = station_availability(reservations, return_goals_default)
-                if not return_goals:
-                    raise RuntimeError("No free station available for idle return.")
-            else:
-                return_goals, goal_available_after = goal_availability(reservations, return_goals_default)
-
-            return_path = find_path(
+        if current not in station_goals:
+            return_path = plan_return_to_station(
                 warehouse,
                 reservations,
                 current,
                 current_time,
-                return_goals,
+                home,
+                station_mode,
                 algorithm,
-                blocked_cells=blocked_cells,
-                goal_available_after=goal_available_after,
+                blocked_cells,
                 deadline=deadline,
             )
             path = merge_segments(path, return_path)
@@ -1026,6 +1097,21 @@ def build_agent_plan_from_state(
         if not task_already_picked:
             release_time = max(0, task.release_time - absolute_start_time)
             if current_time < release_time:
+                if current not in station_goals:
+                    return_path = plan_return_to_station(
+                        warehouse,
+                        reservations,
+                        current,
+                        current_time,
+                        home,
+                        station_mode,
+                        algorithm,
+                        blocked_cells,
+                        deadline=deadline,
+                    )
+                    path = merge_segments(path, return_path)
+                    current = path[-1]
+                    current_time = len(path) - 1
                 path = wait_until_time(
                     warehouse,
                     reservations,
@@ -1054,34 +1140,39 @@ def build_agent_plan_from_state(
             current_time = len(path) - 1
             pickup_times[task.task_id] = absolute_start_time + current_time
 
-        return_goals = return_goals_default
-        goal_available_after = None
-        if task_index == len(agent_tasks) - 1:
-            if station_mode == "Available":
-                return_goals, goal_available_after = station_availability(reservations, return_goals)
-                if not return_goals:
-                    raise RuntimeError("No free station available for final return.")
-            else:
-                return_goals, goal_available_after = goal_availability(reservations, return_goals)
-
-        back_to_station = find_path(
+        to_delivery = find_path(
             warehouse,
             reservations,
             current,
             current_time,
-            return_goals,
+            delivery_goals,
             algorithm,
             blocked_cells=blocked_cells,
-            goal_available_after=goal_available_after,
             deadline=deadline,
         )
-        path = merge_segments(path, back_to_station)
+        path = merge_segments(path, to_delivery)
         current = path[-1]
         current_time = len(path) - 1
         completion_time = absolute_start_time + current_time
         completion_times[task.task_id] = completion_time
         if task.deadline is not None and completion_time > task.deadline:
             missed_deadlines.append(task.task_id)
+
+        if should_return_to_station_after_delivery(agent_tasks, task_index, absolute_start_time + current_time):
+            back_to_station = plan_return_to_station(
+                warehouse,
+                reservations,
+                current,
+                current_time,
+                home,
+                station_mode,
+                algorithm,
+                blocked_cells,
+                deadline=deadline,
+            )
+            path = merge_segments(path, back_to_station)
+            current = path[-1]
+            current_time = len(path) - 1
 
     return AgentPlan(
         agent_id=agent_id,
@@ -1112,23 +1203,37 @@ def build_soft_agent_plan(
     soft_max_expansions: int | None = None,
     deadline: float | None = None,
 ) -> AgentPlan:
-    if station_mode == "Set":
-        default_return_goals = {home}
-    else:
-        default_return_goals = set(warehouse.stations)
-
     current = home
     current_time = 0
     path = [home]
     pickup_times = {}
     completion_times = {}
     missed_deadlines = []
+    delivery_goals = set(warehouse.delivery_positions())
+    station_goals = station_goals_for_mode(warehouse, home, station_mode)
 
     for task_index, task in enumerate(agent_tasks):
         if deadline is not None and time.perf_counter() >= deadline:
             raise RuntimeError("Relaxed planning exceeded the time budget.")
 
         if current_time < task.release_time:
+            if current not in station_goals:
+                return_path = plan_return_to_station(
+                    warehouse,
+                    reservations,
+                    current,
+                    current_time,
+                    home,
+                    station_mode,
+                    "A*",
+                    blocked_cells,
+                    soft=True,
+                    soft_max_expansions=soft_max_expansions,
+                    deadline=deadline,
+                )
+                path = merge_segments(path, return_path)
+                current = path[-1]
+                current_time = len(path) - 1
             while len(path) - 1 < task.release_time:
                 path.append(path[-1])
             current = path[-1]
@@ -1150,35 +1255,40 @@ def build_soft_agent_plan(
         current_time = len(path) - 1
         pickup_times[task.task_id] = current_time
 
-        return_goals = default_return_goals
-        goal_available_after = {}
-        if task_index == len(agent_tasks) - 1:
-            if station_mode == "Available":
-                available_goals, goal_available_after = station_availability(reservations, return_goals)
-                if available_goals:
-                    return_goals = available_goals
-            else:
-                available_goals, goal_available_after = goal_availability(reservations, return_goals)
-                if available_goals:
-                    return_goals = available_goals
-
-        back_home = find_soft_path(
+        to_delivery = find_soft_path(
             warehouse,
             reservations,
             current,
             current_time,
-            return_goals,
+            delivery_goals,
             blocked_cells=blocked_cells,
-            goal_available_after=goal_available_after,
             max_expansions=soft_max_expansions,
             deadline=deadline,
         )
-        path = merge_segments(path, back_home)
+        path = merge_segments(path, to_delivery)
         current = path[-1]
         current_time = len(path) - 1
         completion_times[task.task_id] = current_time
         if task.deadline is not None and current_time > task.deadline:
             missed_deadlines.append(task.task_id)
+
+        if should_return_to_station_after_delivery(agent_tasks, task_index, current_time):
+            back_to_station = plan_return_to_station(
+                warehouse,
+                reservations,
+                current,
+                current_time,
+                home,
+                station_mode,
+                "A*",
+                blocked_cells,
+                soft=True,
+                soft_max_expansions=soft_max_expansions,
+                deadline=deadline,
+            )
+            path = merge_segments(path, back_to_station)
+            current = path[-1]
+            current_time = len(path) - 1
 
     return AgentPlan(
         agent_id=agent_id,
@@ -1561,7 +1671,9 @@ def all_window_agents_done(
     tasks_by_agent: dict[int, list[Task]],
 ) -> bool:
     return all(
-        not progress.carrying and progress.task_index >= len(tasks_by_agent[agent_id])
+        not progress.carrying
+        and not progress.returning_to_station
+        and progress.task_index >= len(tasks_by_agent[agent_id])
         for agent_id, progress in progress_by_id.items()
     )
 
@@ -1583,9 +1695,9 @@ def whca_stall_window_limit(warehouse: WarehouseMap) -> int:
     return max(WHCA_MIN_STALL_WINDOWS, (warehouse.cell_count + window_span - 1) // window_span)
 
 
-def whca_progress_signature(progress_by_id: dict[int, WindowAgentProgress]) -> tuple[tuple[int, bool], ...]:
+def whca_progress_signature(progress_by_id: dict[int, WindowAgentProgress]) -> tuple[tuple[int, bool, bool], ...]:
     return tuple(
-        (progress.task_index, progress.carrying)
+        (progress.task_index, progress.carrying, progress.returning_to_station)
         for _, progress in sorted(progress_by_id.items())
     )
 
@@ -1666,20 +1778,44 @@ def extend_windowed_agent_progress(
     segment = [progress.path[-1]]
     current = segment[-1]
     current_time = base_time
+    delivery_goals = set(warehouse.delivery_positions())
+    station_goals = station_goals_for_mode(warehouse, home, station_mode)
 
     while current_time < window_end:
         if deadline is not None and time.perf_counter() >= deadline:
             raise RuntimeError("WHCA* planning exceeded the time budget.")
 
-        if progress.carrying:
-            task = agent_tasks[progress.task_index]
-            return_goals = {home} if station_mode == "Set" else set(warehouse.stations)
+        if progress.returning_to_station:
             full_path = window_path_search(
                 warehouse,
                 reservations,
                 current,
                 current_time,
-                return_goals,
+                station_goals,
+                algorithm,
+                blocked_cells,
+                allow_soft_collisions=allow_soft_collisions,
+                soft_max_expansions=soft_max_expansions,
+                deadline=deadline,
+            )
+            prefix = truncate_path_to_steps(full_path, window_end - current_time)
+            segment = merge_segments(segment, prefix)
+            current = segment[-1]
+            current_time = base_time + len(segment) - 1
+            if len(prefix) != len(full_path):
+                break
+
+            progress.returning_to_station = False
+            continue
+
+        if progress.carrying:
+            task = agent_tasks[progress.task_index]
+            full_path = window_path_search(
+                warehouse,
+                reservations,
+                current,
+                current_time,
+                delivery_goals,
                 algorithm,
                 blocked_cells,
                 allow_soft_collisions=allow_soft_collisions,
@@ -1698,6 +1834,8 @@ def extend_windowed_agent_progress(
                 progress.missed_deadlines.append(task.task_id)
             progress.carrying = False
             progress.task_index += 1
+            if progress.task_index < len(agent_tasks) and agent_tasks[progress.task_index].release_time > current_time:
+                progress.returning_to_station = True
             continue
 
         if progress.task_index >= len(agent_tasks):
@@ -1795,7 +1933,11 @@ def build_whca_agent_plans_once(
         for agent_id in planning_order:
             progress = progress_by_id[agent_id]
             current_window_end = len(progress_by_id[agent_id].path) - 1 + WHCA_WINDOW_SIZE
-            if not progress.carrying and progress.task_index >= len(tasks_by_agent[agent_id]):
+            if (
+                not progress.carrying
+                and not progress.returning_to_station
+                and progress.task_index >= len(tasks_by_agent[agent_id])
+            ):
                 missing_steps = current_window_end - (len(progress.path) - 1)
                 if missing_steps > 0:
                     progress.path.extend([progress.path[-1]] * missing_steps)

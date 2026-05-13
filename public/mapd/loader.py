@@ -158,11 +158,15 @@ def _load_layout_from_json(path: Path, layout_type: str) -> WarehouseMap:
 
     stations = raw_layout.get("stations")
     shelves = raw_layout.get("shelves")
+    delivery = raw_layout.get("delivery", [])
     if not isinstance(stations, list) or not isinstance(shelves, list):
         raise ValueError(f"Layout JSON must define 'stations' and 'shelves' arrays: {path}")
+    if not isinstance(delivery, list):
+        raise ValueError(f"Layout JSON field 'delivery' must be an array: {path}")
 
     grid = [["E" for _ in range(width)] for _ in range(height)]
     shelf_slots = _fill_areas(grid, shelves, width, height, "#", "shelves", path)
+    _fill_areas(grid, delivery, width, height, "D", "delivery", path)
     _fill_areas(grid, stations, width, height, "S", "stations", path)
     rows = ["".join(row) for row in grid]
     return WarehouseMap(rows, layout_type=normalize_layout_type(layout_type), shelf_slots=shelf_slots)

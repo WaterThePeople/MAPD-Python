@@ -23,6 +23,11 @@ def impossible_variant_reason(
     component_by_coord = connected_components(warehouse)
     home_components = {agent_id: component_by_coord[coord] for agent_id, coord in enumerate(homes)}
     reachable_home_components = set(home_components.values())
+    try:
+        delivery_positions = warehouse.delivery_positions()
+    except ValueError as exc:
+        return f"Scenario cannot be serviced: {exc}"
+    delivery_components = {component_by_coord[position] for position in delivery_positions}
 
     for task in tasks:
         if mode == "Set" and (task.agent_id < 0 or task.agent_id >= agent_count):
@@ -41,11 +46,18 @@ def impossible_variant_reason(
                     f"Task {task.task_id} on shelf {task.shelf_index} is unreachable "
                     f"from agent {task.agent_id}'s home station."
                 )
+            if required_component not in delivery_components:
+                return (
+                    f"Task {task.task_id} cannot be delivered because no delivery area is reachable "
+                    f"from agent {task.agent_id}'s home station."
+                )
         elif not pickup_components & reachable_home_components:
             return (
                 f"Task {task.task_id} on shelf {task.shelf_index} is unreachable "
                 "from every agent home station."
             )
+        elif not delivery_components & reachable_home_components:
+            return "No delivery area is reachable from any agent home station."
 
     return None
 

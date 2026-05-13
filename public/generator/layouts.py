@@ -45,18 +45,23 @@ def all_home_distances(warehouse: WarehouseMap, homes: list[Coord]) -> list[dict
 def build_shelf_descriptors(
     warehouse: WarehouseMap,
     station_distances: dict[Coord, int],
+    delivery_distances: dict[Coord, int],
 ) -> list[ShelfDescriptor]:
     descriptors = []
     for shelf_index in range(warehouse.shelf_count):
         coord = warehouse.shelf_index_to_coord(shelf_index)
         pickup_positions = tuple(sorted(warehouse.pickup_positions(shelf_index)))
         station_distance = min(station_distances[pickup] for pickup in pickup_positions)
+        reachable_delivery = [delivery_distances[pickup] for pickup in pickup_positions if pickup in delivery_distances]
+        if not reachable_delivery:
+            raise ValueError(f"Shelf {shelf_index} has no path from pickup position to a delivery area.")
         descriptors.append(
             ShelfDescriptor(
                 shelf_index=shelf_index,
                 coord=coord,
                 pickup_positions=pickup_positions,
                 station_distance=station_distance,
+                delivery_distance=min(reachable_delivery),
             )
         )
     return descriptors
@@ -87,6 +92,10 @@ def validate_layout(size: SizeProfile, max_open_tasks_on_shelves: int, layout_id
             f"Layout {layout_id} does not match size {size.label}: expected {size.shelf_count} shelves, "
             f"got {warehouse.shelf_count}."
         )
+    try:
+        warehouse.delivery_positions()
+    except ValueError as exc:
+        raise ValueError(f"Layout {layout_id} does not define an accessible delivery area.") from exc
     if max_open_tasks_on_shelves > warehouse.shelf_count:
         raise ValueError(
             f"Layout {layout_id} cannot support MaxOpenTasksOnShelves={max_open_tasks_on_shelves} "
@@ -108,7 +117,8 @@ def build_layout_context(size_key: str, agent_count: int, layout_id: int) -> Lay
     validate_layout(size, size.shelf_count, layout_id, warehouse)
     homes = assign_home_stations(warehouse, agent_count)
     station_distances = bfs_distances(warehouse, list(warehouse.stations))
-    shelf_descriptors = build_shelf_descriptors(warehouse, station_distances)
+    delivery_distances = bfs_distances(warehouse, list(warehouse.delivery_positions()))
+    shelf_descriptors = build_shelf_descriptors(warehouse, station_distances, delivery_distances)
     home_distances = all_home_distances(warehouse, homes)
     distances_by_agent = distances_from_homes_to_shelves(shelf_descriptors, home_distances)
     return LayoutContext(

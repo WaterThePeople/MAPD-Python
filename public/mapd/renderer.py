@@ -394,6 +394,8 @@ def draw_square_cell(
     header_height: int,
     grid_color: tuple[int, int, int],
     station_outline: tuple[int, int, int],
+    delivery_outline: tuple[int, int, int],
+    font,
 ) -> None:
     left, top, right, bottom = square_bounds(coord, cell_size, header_height)
 
@@ -408,6 +410,17 @@ def draw_square_cell(
             outline=station_outline,
             width=scaled_stroke_width(cell_size, 12, maximum=3),
         )
+    elif cell == "D":
+        draw.rectangle((left, top, right, bottom), fill=(255, 255, 255), outline=grid_color, width=1)
+        inset = max(1, int(round(cell_size / 10)))
+        draw.rectangle(
+            (left + inset, top + inset, right - inset, bottom - inset),
+            fill=(255, 255, 255),
+            outline=delivery_outline,
+            width=scaled_stroke_width(cell_size, 12, maximum=3),
+        )
+        if cell_size >= 12:
+            draw_centered_text(draw, (left, top, right, bottom), "D", delivery_outline, font)
     else:
         draw.rectangle((left, top, right, bottom), fill=(255, 255, 255), outline=grid_color, width=1)
 
@@ -420,6 +433,8 @@ def draw_hex_cell(
     header_height: int,
     grid_color: tuple[int, int, int],
     station_outline: tuple[int, int, int],
+    delivery_outline: tuple[int, int, int],
+    font,
 ) -> None:
     polygon = hex_polygon(coord, cell_size, header_height)
 
@@ -435,6 +450,17 @@ def draw_hex_cell(
             station_outline,
             width=scaled_stroke_width(cell_size, 12, maximum=3),
         )
+    elif cell == "D":
+        draw.polygon(polygon, fill=(255, 255, 255))
+        draw_polygon_outline(draw, polygon, grid_color, width=1)
+        draw_polygon_outline(
+            draw,
+            scale_polygon(polygon, 0.82),
+            delivery_outline,
+            width=scaled_stroke_width(cell_size, 12, maximum=3),
+        )
+        if cell_size >= 12:
+            draw_centered_text(draw, hex_bounds(coord, cell_size, header_height), "D", delivery_outline, font)
     else:
         draw.polygon(polygon, fill=(255, 255, 255))
         draw_polygon_outline(draw, polygon, grid_color, width=1)
@@ -448,6 +474,8 @@ def draw_triangle_cell(
     header_height: int,
     grid_color: tuple[int, int, int],
     station_outline: tuple[int, int, int],
+    delivery_outline: tuple[int, int, int],
+    font,
 ) -> None:
     polygon = triangle_polygon(coord, cell_size, header_height)
 
@@ -463,6 +491,17 @@ def draw_triangle_cell(
             station_outline,
             width=scaled_stroke_width(cell_size, 12, maximum=3),
         )
+    elif cell == "D":
+        draw.polygon(polygon, fill=(255, 255, 255))
+        draw_polygon_outline(draw, polygon, grid_color, width=1)
+        draw_polygon_outline(
+            draw,
+            scale_polygon(polygon, 0.8),
+            delivery_outline,
+            width=scaled_stroke_width(cell_size, 12, maximum=3),
+        )
+        if cell_size >= 12:
+            draw_centered_text(draw, triangle_bounds(coord, cell_size, header_height), "D", delivery_outline, font)
     else:
         draw.polygon(polygon, fill=(255, 255, 255))
         draw_polygon_outline(draw, polygon, grid_color, width=1)
@@ -476,15 +515,17 @@ def draw_cell(
     header_height: int,
     grid_color: tuple[int, int, int],
     station_outline: tuple[int, int, int],
+    delivery_outline: tuple[int, int, int],
+    font,
 ) -> None:
     cell = warehouse.rows[coord[0]][coord[1]]
     if warehouse.layout_type == "hexagon":
-        draw_hex_cell(draw, cell, coord, cell_size, header_height, grid_color, station_outline)
+        draw_hex_cell(draw, cell, coord, cell_size, header_height, grid_color, station_outline, delivery_outline, font)
         return
     if warehouse.layout_type == "triangle":
-        draw_triangle_cell(draw, cell, coord, cell_size, header_height, grid_color, station_outline)
+        draw_triangle_cell(draw, cell, coord, cell_size, header_height, grid_color, station_outline, delivery_outline, font)
         return
-    draw_square_cell(draw, cell, coord, cell_size, header_height, grid_color, station_outline)
+    draw_square_cell(draw, cell, coord, cell_size, header_height, grid_color, station_outline, delivery_outline, font)
 
 
 def render_frames(
@@ -514,6 +555,7 @@ def render_frames(
     board_width, board_height, header_height = render_dimensions(warehouse, cell_size)
     total_height = board_height + header_height
     station_outline = (32, 160, 64)
+    delivery_outline = (58, 127, 155)
     grid_color = (215, 215, 215)
     header_bg = (245, 245, 245)
     header_border = (200, 200, 200)
@@ -561,7 +603,17 @@ def render_frames(
         for row in range(warehouse.height):
             for col in range(warehouse.width):
                 coord = (row, col)
-                draw_cell(draw, warehouse, coord, cell_size, header_height, grid_color, station_outline)
+                draw_cell(
+                    draw,
+                    warehouse,
+                    coord,
+                    cell_size,
+                    header_height,
+                    grid_color,
+                    station_outline,
+                    delivery_outline,
+                    font,
+                )
 
                 for task in tasks_by_coord.get(coord, []):
                     if package_release_times[task.task_id] <= time < package_pickups[task.task_id]:
