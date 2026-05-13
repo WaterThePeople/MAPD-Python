@@ -13,6 +13,7 @@
         --muted: #776a58;
         --empty: #efe4d2;
         --station: #2f8f63;
+        --delivery: #3a7f9bfa;
         --shelf: #a46a2a;
         --grid-line: #ddcdb2;
         --gap: 3px;
@@ -189,6 +190,10 @@
 
       .cell.station {
         background: linear-gradient(135deg, #39a272, var(--station));
+      }
+
+      .cell.delivery {
+        background: linear-gradient(135deg, #3a7f9bfa, var(--delivery));
       }
 
       .cell.shelf {
@@ -430,6 +435,7 @@
           width: rawLayout.width,
           height: rawLayout.height,
           stations: rawLayout.stations,
+          delivery: rawLayout.delivery,
           shelves: rawLayout.shelves,
           type: layoutType,
         };
@@ -506,12 +512,17 @@
         }
 
         validateAreas(layout.stations, layout.width, layout.height, "stations");
+        validateAreas(layout.delivery, layout.width, layout.height, "delivery");
         validateAreas(layout.shelves, layout.width, layout.height, "shelves");
       }
 
       function cellType(layout, x, y) {
         if (layout.stations.some((area) => isPointInside(area, x, y))) {
           return "station";
+        }
+
+        if (layout.delivery.some((area) => isPointInside(area, x, y))) {
+          return "delivery";
         }
 
         if (layout.shelves.some((area) => isPointInside(area, x, y))) {
@@ -531,6 +542,7 @@
 
       function renderMeta(layoutSize, layoutId, layout) {
         const stationCells = areaCellCount(layout.stations);
+        const deliveryCells = areaCellCount(layout.delivery);
         const shelfCells = areaCellCount(layout.shelves);
         metaElement.textContent =
           "Layout: " +
@@ -545,6 +557,8 @@
           layout.type +
           " | Stacje: " +
           stationCells +
+          " | Punkty dostarczenia: " +
+          deliveryCells +
           " | Polki: " +
           shelfCells;
       }
