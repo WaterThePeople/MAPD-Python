@@ -15,6 +15,7 @@ SUPPORTED_SPATIAL_DISTRIBUTIONS = {
     "wave": "Wave",
 }
 SUPPORTED_FAILURE_MODELS = {value.lower(): value for value in FAILURE_MODEL_CHOICES}
+MIN_TRIANGLE_EMPTY_NEIGHBORS = 2
 
 
 def normalize_layout_type(value: str | None) -> str:
@@ -145,6 +146,7 @@ def layout_path(
 
 
 def _load_layout_from_json(path: Path, layout_type: str) -> WarehouseMap:
+    resolved_layout_type = normalize_layout_type(layout_type)
     raw_layout = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(raw_layout, dict):
         raise ValueError(f"Layout JSON must be an object: {path}")
@@ -168,8 +170,131 @@ def _load_layout_from_json(path: Path, layout_type: str) -> WarehouseMap:
     shelf_slots = _fill_areas(grid, shelves, width, height, "#", "shelves", path)
     _fill_areas(grid, delivery, width, height, "D", "delivery", path)
     _fill_areas(grid, stations, width, height, "S", "stations", path)
+    if resolved_layout_type == "triangle":
+        _repair_triangle_empty_neighbors(grid, shelf_slots, path)
     rows = ["".join(row) for row in grid]
-    return WarehouseMap(rows, layout_type=normalize_layout_type(layout_type), shelf_slots=shelf_slots)
+    return WarehouseMap(rows, layout_type=resolved_layout_type, shelf_slots=shelf_slots)
+
+
+def _repair_triangle_empty_neighbors(
+    grid: list[list[str]],
+    shelf_slots: list[tuple[int, int]],
+    path: Path,
+) -> None:
+    max_operations = max(1000, len(grid) * len(grid[0]) * 4)
+    for _ in range(max_operations):
+        weak_empty = _find_weak_triangle_empty_cell(grid)
+        if weak_empty is None:
+            return
+
+        operation, index = _triangle_repair_operation(grid, weak_empty)
+        if operation == "column":
+            _insert_layout_column(grid, shelf_slots, index)
+        else:
+            _insert_layout_row(grid, shelf_slots, index)
+
+    raise ValueError(f"Could not repair narrow triangle corridors in layout: {path}")
+
+
+def _find_weak_triangle_empty_cell(grid: list[list[str]]) -> tuple[int, int] | None:
+    for row, cells in enumerate(grid):
+        for col, cell in enumerate(cells):
+            if (
+                cell == "E"
+                and _triangle_empty_neighbor_count(grid, (row, col)) < MIN_TRIANGLE_EMPTY_NEIGHBORS
+                and _is_repairable_triangle_corridor_cell(grid, (row, col))
+            ):
+                return row, col
+    return None
+
+
+def _is_repairable_triangle_corridor_cell(
+    grid: list[list[str]],
+    coord: tuple[int, int],
+) -> bool:
+    row, _ = coord
+    return any(
+        neighbor_row == row and _cell_symbol(grid, (neighbor_row, neighbor_col)) == "#"
+        for neighbor_row, neighbor_col in _triangle_candidate_neighbors(coord)
+    )
+
+
+def _triangle_repair_operation(
+    grid: list[list[str]],
+    coord: tuple[int, int],
+) -> tuple[str, int]:
+    row, col = coord
+    missing_neighbors = [
+        neighbor
+        for neighbor in _triangle_candidate_neighbors(coord)
+        if neighbor[0] == row and _cell_symbol(grid, neighbor) == "#"
+    ]
+
+    for neighbor_row, neighbor_col in missing_neighbors:
+        if neighbor_col < col:
+            return "column", col
+        if neighbor_col > col:
+            return "column", col + 1
+
+    raise ValueError("Could not determine repair operation for triangle layout.")
+
+
+def _insert_layout_column(
+    grid: list[list[str]],
+    shelf_slots: list[tuple[int, int]],
+    col: int,
+) -> None:
+    for row in grid:
+        row.insert(col, "E")
+
+    for index, (shelf_row, shelf_col) in enumerate(shelf_slots):
+        if shelf_col >= col:
+            shelf_slots[index] = (shelf_row, shelf_col + 1)
+
+
+def _insert_layout_row(
+    grid: list[list[str]],
+    shelf_slots: list[tuple[int, int]],
+    row: int,
+) -> None:
+    grid.insert(row, ["E" for _ in range(len(grid[0]))])
+
+    for index, (shelf_row, shelf_col) in enumerate(shelf_slots):
+        if shelf_row >= row:
+            shelf_slots[index] = (shelf_row + 1, shelf_col)
+
+
+def _triangle_empty_neighbor_count(
+    grid: list[list[str]],
+    coord: tuple[int, int],
+) -> int:
+    return sum(
+        1
+        for neighbor in _triangle_candidate_neighbors(coord)
+        if _cell_symbol(grid, neighbor) == "E"
+    )
+
+
+def _triangle_candidate_neighbors(coord: tuple[int, int]) -> list[tuple[int, int]]:
+    row, col = coord
+    if (row + col) % 2 == 0:
+        return [
+            (row, col - 1),
+            (row, col + 1),
+            (row + 1, col),
+        ]
+    return [
+        (row, col - 1),
+        (row, col + 1),
+        (row - 1, col),
+    ]
+
+
+def _cell_symbol(grid: list[list[str]], coord: tuple[int, int]) -> str | None:
+    row, col = coord
+    if row < 0 or row >= len(grid) or col < 0 or col >= len(grid[0]):
+        return None
+    return grid[row][col]
 
 
 def _fill_areas(

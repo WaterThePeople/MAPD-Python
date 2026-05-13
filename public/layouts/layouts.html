@@ -431,20 +431,44 @@
       }
 
       function buildLayout(rawLayout, layoutType) {
+        const cells = buildLayoutCells(rawLayout);
+        if (layoutType === "triangle") {
+          repairTriangleEmptyNeighbors(cells);
+        }
+
         return {
-          width: rawLayout.width,
-          height: rawLayout.height,
+          width: cells[0].length,
+          height: cells.length,
+          sourceWidth: rawLayout.width,
+          sourceHeight: rawLayout.height,
           stations: rawLayout.stations,
           delivery: rawLayout.delivery,
           shelves: rawLayout.shelves,
           type: layoutType,
+          cells,
         };
       }
 
-      function isPointInside(area, x, y) {
-        const [fromX, fromY] = area.from;
-        const [toX, toY] = area.to;
-        return x >= fromX && x <= toX && y >= fromY && y <= toY;
+      function buildLayoutCells(rawLayout) {
+        const cells = Array.from({ length: rawLayout.height }, () =>
+          Array.from({ length: rawLayout.width }, () => "E"),
+        );
+        fillLayoutAreas(cells, rawLayout.shelves, "#");
+        fillLayoutAreas(cells, rawLayout.delivery || [], "D");
+        fillLayoutAreas(cells, rawLayout.stations, "S");
+        return cells;
+      }
+
+      function fillLayoutAreas(cells, areas, symbol) {
+        for (const area of areas) {
+          const [fromX, fromY] = area.from;
+          const [toX, toY] = area.to;
+          for (let y = fromY; y <= toY; y += 1) {
+            for (let x = fromX; x <= toX; x += 1) {
+              cells[y][x] = symbol;
+            }
+          }
+        }
       }
 
       function validateAreas(areas, width, height, label) {
@@ -493,7 +517,9 @@
         if (
           !layout ||
           !Number.isInteger(layout.width) ||
-          !Number.isInteger(layout.height)
+          !Number.isInteger(layout.height) ||
+          !Number.isInteger(layout.sourceWidth) ||
+          !Number.isInteger(layout.sourceHeight)
         ) {
           throw new Error("Layout must define integer width and height.");
         }
@@ -507,25 +533,41 @@
           );
         }
 
-        if (layout.width <= 0 || layout.height <= 0) {
+        if (layout.sourceWidth <= 0 || layout.sourceHeight <= 0) {
           throw new Error("Layout width and height must be positive.");
         }
 
-        validateAreas(layout.stations, layout.width, layout.height, "stations");
-        validateAreas(layout.delivery, layout.width, layout.height, "delivery");
-        validateAreas(layout.shelves, layout.width, layout.height, "shelves");
+        validateAreas(
+          layout.stations,
+          layout.sourceWidth,
+          layout.sourceHeight,
+          "stations",
+        );
+        validateAreas(
+          layout.delivery,
+          layout.sourceWidth,
+          layout.sourceHeight,
+          "delivery",
+        );
+        validateAreas(
+          layout.shelves,
+          layout.sourceWidth,
+          layout.sourceHeight,
+          "shelves",
+        );
       }
 
       function cellType(layout, x, y) {
-        if (layout.stations.some((area) => isPointInside(area, x, y))) {
+        const cell = layout.cells?.[y]?.[x] || "E";
+        if (cell === "S") {
           return "station";
         }
 
-        if (layout.delivery.some((area) => isPointInside(area, x, y))) {
+        if (cell === "D") {
           return "delivery";
         }
 
-        if (layout.shelves.some((area) => isPointInside(area, x, y))) {
+        if (cell === "#") {
           return "shelf";
         }
 
@@ -538,6 +580,117 @@
           const height = area.to[1] - area.from[1] + 1;
           return total + width * height;
         }, 0);
+      }
+
+      function repairTriangleEmptyNeighbors(cells) {
+        const maxOperations = Math.max(
+          1000,
+          cells.length * cells[0].length * 4,
+        );
+        for (
+          let operationCount = 0;
+          operationCount < maxOperations;
+          operationCount += 1
+        ) {
+          const weakCell = findWeakTriangleEmptyCell(cells);
+          if (!weakCell) {
+            return;
+          }
+
+          const repair = triangleRepairOperation(cells, weakCell);
+          if (repair.type === "column") {
+            insertLayoutColumn(cells, repair.index);
+          } else {
+            insertLayoutRow(cells, repair.index);
+          }
+        }
+
+        throw new Error("Nie udalo sie naprawic waskich korytarzy trojkatnych.");
+      }
+
+      function findWeakTriangleEmptyCell(cells) {
+        for (let y = 0; y < cells.length; y += 1) {
+          for (let x = 0; x < cells[y].length; x += 1) {
+            if (
+              cells[y][x] === "E" &&
+              triangleEmptyNeighborCount(cells, x, y) < 2 &&
+              isRepairableTriangleCorridorCell(cells, x, y)
+            ) {
+              return { x, y };
+            }
+          }
+        }
+        return null;
+      }
+
+      function isRepairableTriangleCorridorCell(cells, x, y) {
+        return triangleNeighborCoords(x, y).some(
+          ([neighborX, neighborY]) =>
+            neighborY === y && cellSymbol(cells, neighborX, neighborY) === "#",
+        );
+      }
+
+      function triangleRepairOperation(cells, coord) {
+        const missingNeighbors = triangleNeighborCoords(coord.x, coord.y).filter(
+          ([neighborX, neighborY]) =>
+            neighborY === coord.y &&
+            cellSymbol(cells, neighborX, neighborY) === "#",
+        );
+
+        for (const [neighborX, neighborY] of missingNeighbors) {
+          if (neighborX < coord.x) {
+            return { type: "column", index: coord.x };
+          }
+          if (neighborX > coord.x) {
+            return { type: "column", index: coord.x + 1 };
+          }
+        }
+
+        throw new Error("Nie mozna dobrac korekty dla ukladu trojkatnego.");
+      }
+
+      function insertLayoutColumn(cells, columnIndex) {
+        for (const row of cells) {
+          row.splice(columnIndex, 0, "E");
+        }
+      }
+
+      function insertLayoutRow(cells, rowIndex) {
+        cells.splice(
+          rowIndex,
+          0,
+          Array.from({ length: cells[0].length }, () => "E"),
+        );
+      }
+
+      function triangleEmptyNeighborCount(cells, x, y) {
+        return triangleNeighborCoords(x, y).filter(
+          ([neighborX, neighborY]) =>
+            cellSymbol(cells, neighborX, neighborY) === "E",
+        ).length;
+      }
+
+      function triangleNeighborCoords(x, y) {
+        if ((x + y) % 2 === 0) {
+          return [
+            [x - 1, y],
+            [x + 1, y],
+            [x, y + 1],
+          ];
+        }
+
+        return [
+          [x - 1, y],
+          [x + 1, y],
+          [x, y - 1],
+        ];
+      }
+
+      function cellSymbol(cells, x, y) {
+        if (y < 0 || y >= cells.length || x < 0 || x >= cells[0].length) {
+          return null;
+        }
+        return cells[y][x];
       }
 
       function renderMeta(layoutSize, layoutId, layout) {
