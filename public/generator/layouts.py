@@ -92,6 +92,11 @@ def validate_layout(size: SizeProfile, max_open_tasks_on_shelves: int, layout_id
             f"Layout {layout_id} does not match size {size.label}: expected {size.shelf_count} shelves, "
             f"got {warehouse.shelf_count}."
         )
+    if len(warehouse.delivery_cells) != size.delivery_count:
+        raise ValueError(
+            f"Layout {layout_id} does not match size {size.label}: expected {size.delivery_count} delivery cells, "
+            f"got {len(warehouse.delivery_cells)}."
+        )
     try:
         warehouse.delivery_positions()
     except ValueError as exc:

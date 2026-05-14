@@ -32,6 +32,7 @@ class SizeProfile:
     max_agents: int
     station_count: int
     shelf_count: int
+    delivery_count: int
     default_wave_radius: int
 
 
@@ -42,22 +43,25 @@ SIZE_PROFILES = {
         max_agents=20,
         station_count=20,
         shelf_count=120,
+        delivery_count=10,
         default_wave_radius=12,
     ),
     "medium": SizeProfile(
         label="Medium",
         min_agents=21,
-        max_agents=60,
-        station_count=60,
-        shelf_count=360,
+        max_agents=40,
+        station_count=40,
+        shelf_count=240,
+        delivery_count=20,
         default_wave_radius=12,
     ),
     "large": SizeProfile(
         label="Large",
-        min_agents=61,
-        max_agents=120,
-        station_count=120,
-        shelf_count=720,
+        min_agents=41,
+        max_agents=60,
+        station_count=60,
+        shelf_count=360,
+        delivery_count=30,
         default_wave_radius=18,
     ),
 }
