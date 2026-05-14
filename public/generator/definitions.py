@@ -17,6 +17,14 @@ from .constants import (
 )
 
 
+def deadline_slack_for_density(density: float) -> float:
+    if density <= (1 / 3):
+        return 2.0
+    if density <= (2 / 3):
+        return 3.0
+    return 4.0
+
+
 @dataclass(frozen=True)
 class BatchConfig:
     agents: int
@@ -39,12 +47,7 @@ class BatchConfig:
 
     @property
     def deadline_slack(self) -> float:
-        density = self.agents / self.size.max_agents
-        if density <= (1 / 3):
-            return 0.25
-        if density <= (2 / 3):
-            return 0.50
-        return 0.75
+        return deadline_slack_for_density(self.agents / self.size.max_agents)
 
     @property
     def release_horizon_steps(self) -> int:
@@ -127,12 +130,7 @@ class ScenarioConfig:
 
     @property
     def deadline_slack(self) -> float:
-        density = self.agents / self.size.max_agents
-        if density <= (1 / 3):
-            return 0.25
-        if density <= (2 / 3):
-            return 0.50
-        return 0.75
+        return deadline_slack_for_density(self.agents / self.size.max_agents)
 
     @property
     def release_horizon_steps(self) -> int:
