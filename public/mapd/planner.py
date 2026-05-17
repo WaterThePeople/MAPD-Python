@@ -13,6 +13,7 @@ from mapd.strategy import get_strategy
 from mapd.warehouse import WarehouseMap
 
 SOFT_COLLISION_PENALTY = 1000
+MAX_PLANNING_ORDER_ATTEMPTS = 5
 WHCA_WINDOW_SIZE = 32
 WHCA_MAX_TIME_FACTOR = 24
 WHCA_MIN_STALL_WINDOWS = 24
@@ -74,6 +75,9 @@ def build_color_palette(count: int) -> tuple[tuple[int, int, int], ...]:
 def goal_heuristic(warehouse: WarehouseMap, coord: Coord, goals: set[Coord]) -> int:
     if not goals:
         return 0
+    exact_distance = warehouse.distance_to_nearest(coord, goals)
+    if exact_distance is not None:
+        return exact_distance
     return min(warehouse.distance(coord, goal) for goal in goals)
 
 
@@ -403,6 +407,12 @@ def shortest_distance(
     if not goals:
         raise RuntimeError("Could not find a static path because no goal cells were available.")
 
+    if not blocked_cells:
+        cached_distance = warehouse.distance_to_nearest(start, goals)
+        if cached_distance is None:
+            raise RuntimeError(f"Could not find a static path from {start} to task goals.")
+        return cached_distance
+
     search_algorithm = low_level_algorithm_name(algorithm)
     search = get_algorithm(search_algorithm)
     problem = SearchProblem(
@@ -731,7 +741,7 @@ def build_planning_orders(
             candidate_orders.append(rotate_order(default_order, offset))
             candidate_orders.append(rotate_order(list(reversed(default_order)), offset))
 
-    return unique_orders(candidate_orders)
+    return unique_orders(candidate_orders)[:MAX_PLANNING_ORDER_ATTEMPTS]
 
 
 def prepare_planning_inputs(
@@ -1570,6 +1580,483 @@ def build_agent_plans_from_state_once(
     return [plans_by_id[agent_id] for agent_id in sorted(plans_by_id)]
 
 
+def reserve_dynamic_step_plan(
+    reservations: ReservationTable,
+    plan: AgentPlan,
+    *,
+    permanent_final: bool = False,
+) -> None:
+    reservations.reserve_path(plan.path, permanent_final=permanent_final)
+
+
+def dynamic_step_hold_untils(
+    tasks_by_agent: dict[int, list[Task]],
+    carrying_by_agent: dict[int, bool],
+    forced_waits: dict[int, int],
+    absolute_start_time: int,
+) -> dict[int, int]:
+    hold_untils: dict[int, int] = {}
+    for agent_id, tasks in tasks_by_agent.items():
+        hold_until = max(0, forced_waits.get(agent_id, 0))
+        if not carrying_by_agent.get(agent_id, False) and tasks:
+            next_release_offset = max(0, tasks[0].release_time - absolute_start_time)
+            hold_until = max(hold_until, next_release_offset)
+        hold_untils[agent_id] = hold_until
+    return hold_untils
+
+
+def build_dynamic_step_reservations(
+    start_positions: dict[int, Coord],
+    hold_untils: dict[int, int],
+    forced_waits: dict[int, int],
+    planned_steps_by_id: dict[int, AgentPlan],
+    pending_agent_ids: set[int],
+    station_cells: set[Coord],
+    tasks_by_agent: dict[int, list[Task]],
+    carrying_by_agent: dict[int, bool],
+    *,
+    exclude_agent_id: int | None = None,
+) -> ReservationTable:
+    reservations = ReservationTable()
+    if pending_agent_ids:
+        reserve_state_positions(
+            reservations,
+            start_positions,
+            pending_agent_ids,
+            hold_untils,
+            exclude_agent_id=exclude_agent_id,
+        )
+    reserve_forced_waits(
+        reservations,
+        start_positions,
+        forced_waits,
+        exclude_agent_id=exclude_agent_id,
+    )
+
+    for agent_id in pending_agent_ids:
+        if agent_id == exclude_agent_id:
+            continue
+        if tasks_by_agent.get(agent_id) or carrying_by_agent.get(agent_id, False):
+            continue
+        coord = start_positions[agent_id]
+        if coord in station_cells:
+            existing = reservations.permanent.get(coord)
+            reservations.permanent[coord] = 0 if existing is None else min(existing, 0)
+
+    for agent_id in sorted(planned_steps_by_id):
+        plan = planned_steps_by_id[agent_id]
+        is_idle_at_station = (
+            not tasks_by_agent.get(agent_id)
+            and not carrying_by_agent.get(agent_id, False)
+            and plan.path
+            and plan.path[-1] in station_cells
+        )
+        reserve_dynamic_step_plan(reservations, plan, permanent_final=is_idle_at_station)
+    return reservations
+
+
+def build_dynamic_step_plan_from_state(
+    warehouse: WarehouseMap,
+    reservations: ReservationTable,
+    agent_id: int,
+    start: Coord,
+    home: Coord,
+    home_index: int,
+    color: tuple[int, int, int],
+    agent_tasks: list[Task],
+    *,
+    carrying: bool,
+    initial_wait: int,
+    mark_failure_start: bool,
+    absolute_start_time: int,
+    station_mode: str,
+    algorithm: str,
+    blocked_cells: set[Coord],
+    deadline: float | None = None,
+) -> AgentPlan:
+    current = start
+    current_time = 0
+    path = [start]
+    pickup_times: dict[int, int] = {}
+    completion_times: dict[int, int] = {}
+    missed_deadlines: list[int] = []
+    delayed_times: set[int] = set()
+    failure_start_times: set[int] = set()
+    delivery_goals = set(warehouse.delivery_positions())
+    station_goals = station_goals_for_mode(warehouse, home, station_mode)
+
+    if initial_wait > 0:
+        if mark_failure_start:
+            failure_start_times.add(1)
+        for _ in range(initial_wait):
+            current_time += 1
+            path.append(current)
+            delayed_times.add(current_time)
+
+    if not agent_tasks:
+        if current not in station_goals:
+            return_path = plan_return_to_station(
+                warehouse,
+                reservations,
+                current,
+                current_time,
+                home,
+                station_mode,
+                algorithm,
+                blocked_cells,
+                deadline=deadline,
+            )
+            path = merge_segments(path, return_path)
+
+        return AgentPlan(
+            agent_id=agent_id,
+            color=color,
+            home=home,
+            home_index=home_index,
+            path=path,
+            tasks=agent_tasks,
+            pickup_times=pickup_times,
+            completion_times=completion_times,
+            missed_deadlines=missed_deadlines,
+            delayed_times=delayed_times,
+            failure_start_times=failure_start_times,
+        )
+
+    task = agent_tasks[0]
+    if not carrying:
+        release_time = max(0, task.release_time - absolute_start_time)
+        if current_time < release_time:
+            if current not in station_goals:
+                return_path = plan_return_to_station(
+                    warehouse,
+                    reservations,
+                    current,
+                    current_time,
+                    home,
+                    station_mode,
+                    algorithm,
+                    blocked_cells,
+                    deadline=deadline,
+                )
+                path = merge_segments(path, return_path)
+                current = path[-1]
+                current_time = len(path) - 1
+            path = wait_until_time(
+                warehouse,
+                reservations,
+                path,
+                release_time,
+                algorithm,
+                blocked_cells=blocked_cells,
+                deadline=deadline,
+            )
+            current = path[-1]
+            current_time = len(path) - 1
+
+        pickup_goals = warehouse.pickup_positions(task.shelf_index)
+        to_pickup = find_path(
+            warehouse,
+            reservations,
+            current,
+            current_time,
+            pickup_goals,
+            algorithm,
+            blocked_cells=blocked_cells,
+            deadline=deadline,
+        )
+        path = merge_segments(path, to_pickup)
+        current = path[-1]
+        current_time = len(path) - 1
+        pickup_times[task.task_id] = absolute_start_time + current_time
+
+    to_delivery = find_path(
+        warehouse,
+        reservations,
+        current,
+        current_time,
+        delivery_goals,
+        algorithm,
+        blocked_cells=blocked_cells,
+        deadline=deadline,
+    )
+    path = merge_segments(path, to_delivery)
+    current_time = len(path) - 1
+    completion_time = absolute_start_time + current_time
+    completion_times[task.task_id] = completion_time
+    if task.deadline is not None and completion_time > task.deadline:
+        missed_deadlines.append(task.task_id)
+
+    return AgentPlan(
+        agent_id=agent_id,
+        color=color,
+        home=home,
+        home_index=home_index,
+        path=path,
+        tasks=agent_tasks,
+        pickup_times=pickup_times,
+        completion_times=completion_times,
+        missed_deadlines=missed_deadlines,
+        delayed_times=delayed_times,
+        failure_start_times=failure_start_times,
+    )
+
+
+def path_prefix_to_offset(path: list[Coord], offset: int) -> list[Coord]:
+    if offset <= 0:
+        return [path[0]]
+    if len(path) > offset:
+        return path[: offset + 1]
+    padded = path[:]
+    padded.extend([padded[-1]] * (offset + 1 - len(padded)))
+    return padded
+
+
+def merge_dynamic_execution_segment(
+    base_path: list[Coord],
+    segment: list[Coord],
+) -> list[Coord]:
+    if not base_path:
+        return segment[:]
+    return [*base_path, *segment[1:]]
+
+
+def shift_dynamic_step_plan(plan: AgentPlan, offset: int) -> AgentPlan:
+    if offset <= 0:
+        return plan
+
+    if len(plan.path) > offset:
+        shifted_path = plan.path[offset:]
+    else:
+        shifted_path = [plan.path[-1]]
+
+    return AgentPlan(
+        agent_id=plan.agent_id,
+        color=plan.color,
+        home=plan.home,
+        home_index=plan.home_index,
+        path=shifted_path,
+        tasks=plan.tasks,
+        pickup_times=plan.pickup_times,
+        completion_times=plan.completion_times,
+        missed_deadlines=plan.missed_deadlines,
+        delayed_times={time_step - offset for time_step in plan.delayed_times if time_step > offset},
+        failure_start_times={
+            time_step - offset for time_step in plan.failure_start_times if time_step > offset
+        },
+    )
+
+
+def build_dynamic_agent_plans_from_state_once(
+    warehouse: WarehouseMap,
+    tasks_by_agent: dict[int, list[Task]],
+    homes: dict[int, Coord],
+    start_positions: dict[int, Coord],
+    carrying_by_agent: dict[int, bool],
+    forced_waits: dict[int, int],
+    mark_failure_start: set[int],
+    absolute_start_time: int,
+    colors: list[tuple[int, int, int]],
+    planning_order: list[int],
+    station_mode: str,
+    algorithm: str,
+    deadline: float | None = None,
+) -> list[AgentPlan]:
+    station_cells = set(warehouse.stations)
+    current_absolute_time = absolute_start_time
+    remaining_tasks = {agent_id: list(tasks_by_agent[agent_id]) for agent_id in tasks_by_agent}
+    carrying = {agent_id: bool(carrying_by_agent.get(agent_id, False)) for agent_id in tasks_by_agent}
+    current_positions = {agent_id: start_positions[agent_id] for agent_id in tasks_by_agent}
+    dynamic_forced_waits = {agent_id: max(0, forced_waits.get(agent_id, 0)) for agent_id in tasks_by_agent}
+    dynamic_failure_marks = set(mark_failure_start)
+
+    paths = {agent_id: [start_positions[agent_id]] for agent_id in tasks_by_agent}
+    pickup_times: dict[int, dict[int, int]] = {agent_id: {} for agent_id in tasks_by_agent}
+    completion_times: dict[int, dict[int, int]] = {agent_id: {} for agent_id in tasks_by_agent}
+    missed_deadlines: dict[int, list[int]] = {agent_id: [] for agent_id in tasks_by_agent}
+    delayed_times: dict[int, set[int]] = {agent_id: set() for agent_id in tasks_by_agent}
+    failure_start_times: dict[int, set[int]] = {agent_id: set() for agent_id in tasks_by_agent}
+    active_steps_by_id: dict[int, AgentPlan] = {}
+
+    while any(remaining_tasks[agent_id] or carrying[agent_id] for agent_id in tasks_by_agent):
+        if deadline is not None and time.perf_counter() >= deadline:
+            raise RuntimeError("Dynamic planning exceeded the time budget.")
+
+        hold_untils = dynamic_step_hold_untils(
+            remaining_tasks,
+            carrying,
+            dynamic_forced_waits,
+            current_absolute_time,
+        )
+
+        step_seed_options = [active_steps_by_id]
+        if active_steps_by_id:
+            step_seed_options.append({})
+
+        planned_steps_by_id: dict[int, AgentPlan] | None = None
+        last_step_error: RuntimeError | None = None
+        for step_seed in step_seed_options:
+            candidate_steps_by_id: dict[int, AgentPlan] = dict(step_seed)
+            try:
+                for index, agent_id in enumerate(planning_order):
+                    if agent_id in candidate_steps_by_id:
+                        continue
+                    pending_agent_ids = {
+                        pending_agent_id
+                        for pending_agent_id in planning_order[index:]
+                        if pending_agent_id not in candidate_steps_by_id
+                    }
+                    reservations = build_dynamic_step_reservations(
+                        current_positions,
+                        hold_untils,
+                        dynamic_forced_waits,
+                        candidate_steps_by_id,
+                        pending_agent_ids,
+                        station_cells,
+                        remaining_tasks,
+                        carrying,
+                        exclude_agent_id=agent_id,
+                    )
+                    candidate_steps_by_id[agent_id] = build_dynamic_step_plan_from_state(
+                        warehouse=warehouse,
+                        reservations=reservations,
+                        agent_id=agent_id,
+                        start=current_positions[agent_id],
+                        home=homes[agent_id],
+                        home_index=warehouse.coord_to_index(homes[agent_id]),
+                        color=colors[agent_id],
+                        agent_tasks=remaining_tasks[agent_id],
+                        carrying=carrying[agent_id],
+                        initial_wait=dynamic_forced_waits.get(agent_id, 0),
+                        mark_failure_start=agent_id in dynamic_failure_marks,
+                        absolute_start_time=current_absolute_time,
+                        station_mode=station_mode,
+                        algorithm=algorithm,
+                        blocked_cells=set(),
+                        deadline=deadline,
+                    )
+            except RuntimeError as exc:
+                last_step_error = exc
+                continue
+
+            planned_steps_by_id = candidate_steps_by_id
+            break
+
+        if planned_steps_by_id is None:
+            if last_step_error is None:
+                raise RuntimeError("Dynamic planning could not build the next planning step.")
+            raise last_step_error
+
+        next_completion_time: int | None = None
+        for agent_id, step_plan in planned_steps_by_id.items():
+            tasks = remaining_tasks[agent_id]
+            if not tasks:
+                continue
+            completion_time = step_plan.completion_times.get(tasks[0].task_id)
+            if completion_time is None:
+                continue
+            if next_completion_time is None or completion_time < next_completion_time:
+                next_completion_time = completion_time
+
+        if next_completion_time is None:
+            raise RuntimeError("Dynamic planning could not find any next task delivery event.")
+        if next_completion_time < current_absolute_time:
+            raise RuntimeError("Dynamic planning produced a delivery event in the past.")
+
+        event_offset = next_completion_time - current_absolute_time
+        local_base_time = current_absolute_time - absolute_start_time
+        completed_agents: set[int] = set()
+
+        for agent_id, step_plan in planned_steps_by_id.items():
+            segment = path_prefix_to_offset(step_plan.path, event_offset)
+            paths[agent_id] = merge_dynamic_execution_segment(paths[agent_id], segment)
+            current_positions[agent_id] = segment[-1]
+
+            for delayed_time in step_plan.delayed_times:
+                if delayed_time <= event_offset:
+                    delayed_times[agent_id].add(local_base_time + delayed_time)
+            for failure_time in step_plan.failure_start_times:
+                if failure_time <= event_offset:
+                    failure_start_times[agent_id].add(local_base_time + failure_time)
+
+            tasks = remaining_tasks[agent_id]
+            if not tasks:
+                continue
+
+            task = tasks[0]
+            pickup_time = step_plan.pickup_times.get(task.task_id)
+            if pickup_time is not None and pickup_time <= next_completion_time:
+                pickup_times[agent_id][task.task_id] = pickup_time
+
+            completion_time = step_plan.completion_times.get(task.task_id)
+            if completion_time is not None and completion_time <= next_completion_time:
+                completion_times[agent_id][task.task_id] = completion_time
+                if task.deadline is not None and completion_time > task.deadline:
+                    missed_deadlines[agent_id].append(task.task_id)
+                remaining_tasks[agent_id] = tasks[1:]
+                carrying[agent_id] = False
+                completed_agents.add(agent_id)
+                continue
+
+            carrying[agent_id] = (
+                carrying[agent_id]
+                or (pickup_time is not None and pickup_time <= next_completion_time)
+            )
+
+        current_absolute_time = next_completion_time
+        dynamic_forced_waits = {agent_id: 0 for agent_id in tasks_by_agent}
+        dynamic_failure_marks = set()
+        active_steps_by_id = {
+            agent_id: shift_dynamic_step_plan(step_plan, event_offset)
+            for agent_id, step_plan in planned_steps_by_id.items()
+            if agent_id not in completed_agents
+        }
+
+    plans = [
+        AgentPlan(
+            agent_id=agent_id,
+            color=colors[agent_id],
+            home=homes[agent_id],
+            home_index=warehouse.coord_to_index(homes[agent_id]),
+            path=trim_trailing_waits(paths[agent_id]),
+            tasks=tasks_by_agent[agent_id],
+            pickup_times=pickup_times[agent_id],
+            completion_times=completion_times[agent_id],
+            missed_deadlines=missed_deadlines[agent_id],
+            delayed_times=delayed_times[agent_id],
+            failure_start_times=failure_start_times[agent_id],
+        )
+        for agent_id in sorted(tasks_by_agent)
+    ]
+    return return_completed_agents_to_stations(warehouse, plans, station_mode, algorithm, deadline=deadline)
+
+
+def build_dynamic_agent_plans_once(
+    warehouse: WarehouseMap,
+    tasks_by_agent: dict[int, list[Task]],
+    homes: dict[int, Coord],
+    colors: list[tuple[int, int, int]],
+    planning_order: list[int],
+    station_mode: str,
+    algorithm: str,
+    deadline: float | None = None,
+) -> list[AgentPlan]:
+    return build_dynamic_agent_plans_from_state_once(
+        warehouse=warehouse,
+        tasks_by_agent=tasks_by_agent,
+        homes=homes,
+        start_positions=homes,
+        carrying_by_agent={agent_id: False for agent_id in tasks_by_agent},
+        forced_waits={agent_id: 0 for agent_id in tasks_by_agent},
+        mark_failure_start=set(),
+        absolute_start_time=0,
+        colors=colors,
+        planning_order=planning_order,
+        station_mode=station_mode,
+        algorithm=algorithm,
+        deadline=deadline,
+    )
+
+
 def truncate_path_to_steps(path: list[Coord], max_steps: int) -> list[Coord]:
     if not path:
         return []
@@ -2045,17 +2532,14 @@ def build_agent_plans(
                     algorithm,
                     deadline=deadline,
                 )
-            return build_agent_plans_once(
+            return build_dynamic_agent_plans_once(
                 warehouse,
                 tasks_by_agent,
                 homes,
-                station_cells,
                 colors,
                 planning_order,
                 station_mode,
                 algorithm,
-                allow_soft_collisions=False,
-                stats=stats,
                 deadline=deadline,
             )
         except RuntimeError as exc:
@@ -2094,7 +2578,7 @@ def build_agent_plans_from_state(
     last_error: RuntimeError | None = None
     for planning_order in planning_orders:
         try:
-            return build_agent_plans_from_state_once(
+            return build_dynamic_agent_plans_from_state_once(
                 warehouse=warehouse,
                 tasks_by_agent=tasks_by_agent,
                 homes=homes,

@@ -40,6 +40,7 @@ class WarehouseMap:
         self._neighbors_cache: dict[Coord, tuple[Coord, ...]] = {}
         self._pickup_positions_cache: dict[int, frozenset[Coord]] = {}
         self._delivery_positions_cache: frozenset[Coord] | None = None
+        self._distance_map_cache: dict[frozenset[Coord], dict[Coord, int]] = {}
 
         self.traversable: set[Coord] = set()
         self.stations: list[Coord] = []
@@ -106,6 +107,18 @@ class WarehouseMap:
         resolved = tuple(next_coord for next_coord in self._candidate_neighbors(coord) if next_coord in self.traversable)
         self._neighbors_cache[coord] = resolved
         return resolved
+
+    def distance_to_nearest(self, src: Coord, goals: set[Coord] | frozenset[Coord]) -> int | None:
+        traversable_goals = frozenset(goal for goal in goals if goal in self.traversable)
+        if not traversable_goals:
+            return None
+
+        distances = self._distance_map_cache.get(traversable_goals)
+        if distances is None:
+            distances = self._build_distance_map(traversable_goals)
+            self._distance_map_cache[traversable_goals] = distances
+
+        return distances.get(src)
 
     def distance(self, src: Coord, dst: Coord) -> int:
         if self.layout_type == "hexagon":
@@ -186,6 +199,21 @@ class WarehouseMap:
                 if next_coord in self.traversable:
                     positions.add(next_coord)
         return positions
+
+    def _build_distance_map(self, goals: frozenset[Coord]) -> dict[Coord, int]:
+        distances = {goal: 0 for goal in goals}
+        queue = deque(goals)
+
+        while queue:
+            current = queue.popleft()
+            next_distance = distances[current] + 1
+            for next_coord in self.neighbors(current):
+                if next_coord in distances:
+                    continue
+                distances[next_coord] = next_distance
+                queue.append(next_coord)
+
+        return distances
 
     def _square_candidates(self, coord: Coord) -> list[Coord]:
         row, col = coord
