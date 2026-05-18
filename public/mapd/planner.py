@@ -13,7 +13,9 @@ from mapd.strategy import get_strategy
 from mapd.warehouse import WarehouseMap
 
 SOFT_COLLISION_PENALTY = 1000
-MAX_PLANNING_ORDER_ATTEMPTS = 5
+SMALL_PLANNING_ORDER_ATTEMPTS = 5
+MEDIUM_PLANNING_ORDER_ATTEMPTS = 10
+LARGE_PLANNING_ORDER_ATTEMPTS = 15
 WHCA_WINDOW_SIZE = 32
 WHCA_MAX_TIME_FACTOR = 24
 WHCA_MIN_STALL_WINDOWS = 24
@@ -706,6 +708,14 @@ def unique_orders(candidate_orders: list[list[int]]) -> list[list[int]]:
     return unique
 
 
+def planning_order_attempt_limit(agent_count: int) -> int:
+    if agent_count <= 20:
+        return SMALL_PLANNING_ORDER_ATTEMPTS
+    if agent_count <= 40:
+        return MEDIUM_PLANNING_ORDER_ATTEMPTS
+    return LARGE_PLANNING_ORDER_ATTEMPTS
+
+
 def build_planning_orders(
     warehouse: WarehouseMap,
     tasks_by_agent: dict[int, list[Task]],
@@ -741,7 +751,7 @@ def build_planning_orders(
             candidate_orders.append(rotate_order(default_order, offset))
             candidate_orders.append(rotate_order(list(reversed(default_order)), offset))
 
-    return unique_orders(candidate_orders)[:MAX_PLANNING_ORDER_ATTEMPTS]
+    return unique_orders(candidate_orders)[: planning_order_attempt_limit(len(agent_ids))]
 
 
 def prepare_planning_inputs(
@@ -1407,7 +1417,7 @@ def relocate_finished_agent(
         return False
     blocker_plan.path = merge_segments(updated_path, back_to_station)
     if stats is not None:
-        stats.note_replan()
+        stats.note_agent_replan()
     return True
 
 
@@ -1503,7 +1513,7 @@ def build_agent_plans_once(
             if blocker_coord in blocked_cells:
                 raise RuntimeError("Could not resolve a repeated station-lane conflict during replanning.")
             if stats is not None:
-                stats.note_replan()
+                stats.note_agent_replan()
             blocked_cells.add(blocker_coord)
 
         plans_by_id[agent_id] = plan
@@ -1524,6 +1534,7 @@ def build_agent_plans_from_state_once(
     planning_order: list[int],
     station_mode: str,
     algorithm: str,
+    stats: PlanningStats | None = None,
     deadline: float | None = None,
 ) -> list[AgentPlan]:
     station_cells = set(warehouse.stations)
@@ -1859,6 +1870,7 @@ def build_dynamic_agent_plans_from_state_once(
     planning_order: list[int],
     station_mode: str,
     algorithm: str,
+    stats: PlanningStats | None = None,
     deadline: float | None = None,
 ) -> list[AgentPlan]:
     station_cells = set(warehouse.stations)
@@ -1945,7 +1957,6 @@ def build_dynamic_agent_plans_from_state_once(
             if last_step_error is None:
                 raise RuntimeError("Dynamic planning could not build the next planning step.")
             raise last_step_error
-
         next_completion_time: int | None = None
         for agent_id, step_plan in planned_steps_by_id.items():
             tasks = remaining_tasks[agent_id]
@@ -2038,6 +2049,7 @@ def build_dynamic_agent_plans_once(
     planning_order: list[int],
     station_mode: str,
     algorithm: str,
+    stats: PlanningStats | None = None,
     deadline: float | None = None,
 ) -> list[AgentPlan]:
     return build_dynamic_agent_plans_from_state_once(
@@ -2053,6 +2065,7 @@ def build_dynamic_agent_plans_once(
         planning_order=planning_order,
         station_mode=station_mode,
         algorithm=algorithm,
+        stats=stats,
         deadline=deadline,
     )
 
@@ -2519,7 +2532,7 @@ def build_agent_plans(
     last_error: RuntimeError | None = None
     for attempt_index, planning_order in enumerate(planning_orders):
         if attempt_index > 0 and stats is not None:
-            stats.note_replan()
+            stats.note_planning_attempt_replan()
         try:
             if use_whca:
                 return build_whca_agent_plans_once(
@@ -2540,6 +2553,7 @@ def build_agent_plans(
                 planning_order,
                 station_mode,
                 algorithm,
+                stats=stats,
                 deadline=deadline,
             )
         except RuntimeError as exc:
@@ -2563,6 +2577,7 @@ def build_agent_plans_from_state(
     colors: list[tuple[int, int, int]],
     station_mode: str,
     algorithm: str,
+    stats: PlanningStats | None = None,
     deadline: float | None = None,
 ) -> list[AgentPlan]:
     ordering_positions = {agent_id: start_positions[agent_id] for agent_id in tasks_by_agent}
@@ -2576,7 +2591,9 @@ def build_agent_plans_from_state(
     )
 
     last_error: RuntimeError | None = None
-    for planning_order in planning_orders:
+    for attempt_index, planning_order in enumerate(planning_orders):
+        if attempt_index > 0 and stats is not None:
+            stats.note_planning_attempt_replan()
         try:
             return build_dynamic_agent_plans_from_state_once(
                 warehouse=warehouse,
@@ -2591,6 +2608,7 @@ def build_agent_plans_from_state(
                 planning_order=planning_order,
                 station_mode=station_mode,
                 algorithm=algorithm,
+                stats=stats,
                 deadline=deadline,
             )
         except RuntimeError as exc:
@@ -2647,7 +2665,7 @@ def build_relaxed_agent_plans(
 
     for attempt_index, planning_order in enumerate(planning_orders):
         if attempt_index > 0 and stats is not None:
-            stats.note_replan()
+            stats.note_planning_attempt_replan()
         if effective_deadline is not None and time.perf_counter() >= effective_deadline:
             last_error = RuntimeError("Fallback planning exceeded the time budget.")
             break

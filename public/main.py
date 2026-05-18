@@ -66,7 +66,7 @@ DEFAULT_FALLBACK_GIF = False
 DEFAULT_DEBUG_FRAMES_ROOT = DEBUGGING_ROOT
 FALLBACK_GIF_TIME_BUDGET_SECONDS = 20.0
 FALLBACK_GIF_SOFT_MAX_EXPANSIONS = 100_000
-DEFAULT_VARIANT_TIME_BUDGET_SECONDS = 240.0
+DEFAULT_VARIANT_TIME_BUDGET_SECONDS = 600.0
 
 STATUS_SOLVED = "Solved"
 STATUS_NO_SOLUTION = "No solution"
@@ -92,6 +92,14 @@ SUITE_ONLY_ALLOWED_FLAGS = {
     "--cell-size",
     "--frame-duration",
 }
+
+
+def replan_result_fields(stats: PlanningStats) -> dict[str, int]:
+    return {
+        "agent_replans": stats.agent_replans,
+        "failure_replans": stats.failure_replans,
+        "planning_attempt_replans": stats.planning_attempt_replans,
+    }
 
 
 @dataclass(frozen=True)
@@ -578,6 +586,7 @@ def execute_variant(
             simulation_time_seconds=time.perf_counter() - started_at,
             failure_count=0,
             failure_delay_steps=0,
+            **replan_result_fields(stats),
         )
 
     try:
@@ -610,9 +619,10 @@ def execute_variant(
                 simulation_time_seconds=time.perf_counter() - started_at,
                 failure_count=0,
                 failure_delay_steps=0,
+                **replan_result_fields(stats),
             )
         try:
-            stats.note_replan()
+            stats.note_planning_attempt_replan()
             relaxed_plans = run_relaxed_simulation(
                 warehouse,
                 agent_count,
@@ -641,6 +651,7 @@ def execute_variant(
                 simulation_time_seconds=time.perf_counter() - started_at,
                 failure_count=0,
                 failure_delay_steps=0,
+                **replan_result_fields(stats),
             )
 
         try:
@@ -651,6 +662,7 @@ def execute_variant(
                 failure_model,
                 station_mode,
                 algorithm,
+                stats=stats,
                 deadline=variant_deadline,
             )
             relaxed_makespan = render_or_measure(
@@ -674,6 +686,7 @@ def execute_variant(
                 simulation_time_seconds=time.perf_counter() - started_at,
                 failure_count=0,
                 failure_delay_steps=0,
+                **replan_result_fields(stats),
             )
 
         return VariantExecutionResult(
@@ -686,6 +699,7 @@ def execute_variant(
             simulation_time_seconds=time.perf_counter() - started_at,
             failure_count=failure_count,
             failure_delay_steps=failure_delay_steps,
+            **replan_result_fields(stats),
         )
 
     try:
@@ -696,6 +710,7 @@ def execute_variant(
             failure_model,
             station_mode,
             algorithm,
+            stats=stats,
             deadline=variant_deadline,
         )
         makespan = render_or_measure(
@@ -719,6 +734,7 @@ def execute_variant(
             simulation_time_seconds=time.perf_counter() - started_at,
             failure_count=0,
             failure_delay_steps=0,
+            **replan_result_fields(stats),
         )
 
     return VariantExecutionResult(
@@ -731,6 +747,7 @@ def execute_variant(
         simulation_time_seconds=time.perf_counter() - started_at,
         failure_count=failure_count,
         failure_delay_steps=failure_delay_steps,
+        **replan_result_fields(stats),
     )
 
 

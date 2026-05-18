@@ -3,7 +3,7 @@ from __future__ import annotations
 import random
 import time
 
-from mapd.models import AgentPlan, FAILURE_MODEL_CHOICES, ScenarioMetadata, Task
+from mapd.models import AgentPlan, FAILURE_MODEL_CHOICES, PlanningStats, ScenarioMetadata, Task
 from mapd.planner import build_agent_plans_from_state
 
 
@@ -179,6 +179,7 @@ def replan_after_failures(
     new_failures: dict[int, int],
     station_mode: str,
     algorithm: str,
+    stats: PlanningStats | None = None,
     deadline: float | None = None,
 ) -> list[AgentPlan]:
     tasks_by_agent: dict[int, list[Task]] = {}
@@ -219,6 +220,7 @@ def replan_after_failures(
         colors=colors,
         station_mode=station_mode,
         algorithm=algorithm,
+        stats=stats,
         deadline=deadline,
     )
 
@@ -229,6 +231,7 @@ def apply_agent_delay_model(
     metadata: ScenarioMetadata,
     station_mode: str,
     algorithm: str,
+    stats: PlanningStats | None = None,
     deadline: float | None = None,
 ) -> tuple[list[AgentPlan], int, int]:
     probability = metadata.failure_probability or 0.0
@@ -260,6 +263,8 @@ def apply_agent_delay_model(
             return current_plans, failure_count, failure_delay_steps
 
         event_time, new_failures = next_event
+        if stats is not None:
+            stats.note_failure_replan()
         current_plans = merge_replanned_plans(
             current_plans,
             replan_after_failures(
@@ -269,6 +274,7 @@ def apply_agent_delay_model(
                 new_failures=new_failures,
                 station_mode=station_mode,
                 algorithm=algorithm,
+                stats=stats,
                 deadline=deadline,
             ),
             event_time,
@@ -285,6 +291,7 @@ def apply_failure_model(
     failure_model: str,
     station_mode: str,
     algorithm: str,
+    stats: PlanningStats | None = None,
     deadline: float | None = None,
 ) -> tuple[list[AgentPlan], int, int]:
     normalized = failure_model.strip()
@@ -292,4 +299,4 @@ def apply_failure_model(
         raise ValueError(f"Unsupported failure model: {failure_model}")
     if normalized == "None":
         return plans, 0, 0
-    return apply_agent_delay_model(warehouse, plans, metadata, station_mode, algorithm, deadline=deadline)
+    return apply_agent_delay_model(warehouse, plans, metadata, station_mode, algorithm, stats=stats, deadline=deadline)

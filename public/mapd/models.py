@@ -32,9 +32,27 @@ class AgentPlan:
 @dataclass
 class PlanningStats:
     replans: int = 0
+    agent_replans: int = 0
+    failure_replans: int = 0
+    planning_attempt_replans: int = 0
 
-    def note_replan(self) -> None:
-        self.replans += 1
+    def note_replan(self, count: int = 1) -> None:
+        self.replans += max(0, count)
+
+    def note_agent_replan(self, count: int = 1) -> None:
+        resolved_count = max(0, count)
+        self.agent_replans += resolved_count
+        self.note_replan(resolved_count)
+
+    def note_failure_replan(self, count: int = 1) -> None:
+        resolved_count = max(0, count)
+        self.failure_replans += resolved_count
+        self.note_replan(resolved_count)
+
+    def note_planning_attempt_replan(self, count: int = 1) -> None:
+        resolved_count = max(0, count)
+        self.planning_attempt_replans += resolved_count
+        self.note_replan(resolved_count)
 
 
 @dataclass(frozen=True)
@@ -104,3 +122,6 @@ class VariantExecutionResult:
     simulation_time_seconds: float
     failure_count: int | None = None
     failure_delay_steps: int | None = None
+    agent_replans: int = 0
+    failure_replans: int = 0
+    planning_attempt_replans: int = 0

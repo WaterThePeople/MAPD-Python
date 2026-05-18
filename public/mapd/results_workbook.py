@@ -52,6 +52,9 @@ COMPARISON_HEADERS = [
     "failure duration",
     "number of waits",
     "replans",
+    "agent replans",
+    "failure replans",
+    "planning attempt replans",
     "sum of distances",
     "simulation time",
 ]
@@ -140,6 +143,9 @@ def build_comparison_row(
         result.failure_delay_steps,
         wait_step_count(plans, station_cells),
         result.replans,
+        result.agent_replans,
+        result.failure_replans,
+        result.planning_attempt_replans,
         distance_step_sum(plans),
         round(result.simulation_time_seconds, 2),
     ]

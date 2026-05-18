@@ -1,4 +1,4 @@
-﻿ID: 123456
+ID: 123456
 Seed: 123456
 
 Size: Small
@@ -26,7 +26,7 @@ WaveZone: Center
 WaveRadius: 12
 
 DeadlineSlack: 0.25
-MaxSimulationTimeSeconds: 240
+MaxSimulationTimeSeconds: 600
 
 FailureProbability: 0.01%
 FailureDurationMin: 5
