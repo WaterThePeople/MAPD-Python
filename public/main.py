@@ -25,7 +25,7 @@ from mapd.models import (
     ScenarioVariant,
     VariantExecutionResult,
 )
-from mapd.planner import build_agent_plans, build_relaxed_agent_plans
+from mapd.planner import build_agent_plans
 from mapd.report_metrics import (
     algorithm_label,
     distance_step_sum,
@@ -62,10 +62,7 @@ DEFAULT_STRATEGY = "None"
 DEFAULT_ALGORITHM = "BFS"
 DEFAULT_RENDER_GIF = False
 DEFAULT_DEBUGGING = False
-DEFAULT_FALLBACK_GIF = False
 DEFAULT_DEBUG_FRAMES_ROOT = DEBUGGING_ROOT
-FALLBACK_GIF_TIME_BUDGET_SECONDS = 20.0
-FALLBACK_GIF_SOFT_MAX_EXPANSIONS = 100_000
 DEFAULT_VARIANT_TIME_BUDGET_SECONDS = 600.0
 
 STATUS_SOLVED = "Solved"
@@ -225,15 +222,6 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_DEBUGGING,
         help="Export debug frames for a single scenario run.",
     )
-    parser.add_argument(
-        "--fallback-gif",
-        action="store_true",
-        default=DEFAULT_FALLBACK_GIF,
-        help=(
-            "Single scenario only. When no collision-free solution is found and --gif is enabled, "
-            "render a best-effort GIF that still prefers collision-free detours and uses collisions only as a last resort."
-        ),
-    )
     return parser
 
 
@@ -254,9 +242,6 @@ def validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace, exp
         parser.error("--frame-duration must be a positive integer.")
     if args.jobs is not None and args.jobs <= 0:
         parser.error("--jobs must be a positive integer.")
-    if args.fallback_gif and not args.gif:
-        parser.error("--fallback-gif requires --gif.")
-
     if args.suite is None:
         return
 
@@ -270,42 +255,6 @@ def validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace, exp
     )
     if unsupported:
         parser.error("--suite cannot be combined with: " + ", ".join(unsupported))
-
-
-def run_relaxed_simulation(
-    warehouse,
-    agent_count: int,
-    tasks,
-    mode: str,
-    station_mode: str,
-    strategy: str,
-    algorithm: str,
-    output_path: Path | None,
-    cell_size: int,
-    frame_duration: int,
-    progress: bool,
-    render_gif: bool,
-    debug_frames_dir: Path | None = None,
-    *,
-    time_budget_seconds: float = FALLBACK_GIF_TIME_BUDGET_SECONDS,
-    soft_max_expansions: int = FALLBACK_GIF_SOFT_MAX_EXPANSIONS,
-    stats: PlanningStats | None = None,
-    deadline: float | None = None,
-) -> list:
-    plans = build_relaxed_agent_plans(
-        warehouse,
-        agent_count,
-        tasks,
-        mode,
-        station_mode,
-        strategy,
-        algorithm,
-        time_budget_seconds=time_budget_seconds,
-        soft_max_expansions=soft_max_expansions,
-        stats=stats,
-        deadline=deadline,
-    )
-    return plans
 
 
 def resolve_scenario_path(scenario_arg: str) -> Path:
@@ -608,97 +557,16 @@ def execute_variant(
             deadline=variant_deadline,
         )
     except RuntimeError as exc:
-        if variant_deadline is not None and time.perf_counter() >= variant_deadline:
-            return VariantExecutionResult(
-                status=STATUS_NO_SOLUTION,
-                details=str(exc),
-                makespan=None,
-                plans=None,
-                collisions=None,
-                replans=stats.replans,
-                simulation_time_seconds=time.perf_counter() - started_at,
-                failure_count=0,
-                failure_delay_steps=0,
-                **replan_result_fields(stats),
-            )
-        try:
-            stats.note_planning_attempt_replan()
-            relaxed_plans = run_relaxed_simulation(
-                warehouse,
-                agent_count,
-                tasks,
-                mode,
-                station_mode,
-                strategy,
-                algorithm,
-                output_path,
-                cell_size,
-                frame_duration,
-                progress,
-                render_gif,
-                debug_frames_dir,
-                stats=stats,
-                deadline=variant_deadline,
-            )
-        except RuntimeError as relaxed_exc:
-            return VariantExecutionResult(
-                status=STATUS_NO_SOLUTION,
-                details=f"{exc} Best-effort simulation failed: {relaxed_exc}",
-                makespan=None,
-                plans=None,
-                collisions=None,
-                replans=stats.replans,
-                simulation_time_seconds=time.perf_counter() - started_at,
-                failure_count=0,
-                failure_delay_steps=0,
-                **replan_result_fields(stats),
-            )
-
-        try:
-            executed_relaxed_plans, failure_count, failure_delay_steps = apply_failure_model(
-                warehouse,
-                relaxed_plans,
-                metadata,
-                failure_model,
-                station_mode,
-                algorithm,
-                stats=stats,
-                deadline=variant_deadline,
-            )
-            relaxed_makespan = render_or_measure(
-                warehouse,
-                executed_relaxed_plans,
-                output_path,
-                cell_size,
-                frame_duration,
-                progress,
-                render_gif,
-                debug_frames_dir,
-            )
-        except RuntimeError as failure_exc:
-            return VariantExecutionResult(
-                status=STATUS_NO_SOLUTION,
-                details=f"{exc} Best-effort execution failed under {failure_model_label(failure_model)}: {failure_exc}",
-                makespan=None,
-                plans=None,
-                collisions=None,
-                replans=stats.replans,
-                simulation_time_seconds=time.perf_counter() - started_at,
-                failure_count=0,
-                failure_delay_steps=0,
-                **replan_result_fields(stats),
-            )
-
         return VariantExecutionResult(
             status=STATUS_NO_SOLUTION,
             details=str(exc),
-            makespan=relaxed_makespan,
-            plans=executed_relaxed_plans,
-            collisions=total_collision_count(executed_relaxed_plans),
+            makespan=None,
+            plans=None,
+            collisions=None,
             replans=stats.replans,
             simulation_time_seconds=time.perf_counter() - started_at,
-            failure_count=failure_count,
-            failure_delay_steps=failure_delay_steps,
+            failure_count=0,
+            failure_delay_steps=0,
             **replan_result_fields(stats),
         )
 

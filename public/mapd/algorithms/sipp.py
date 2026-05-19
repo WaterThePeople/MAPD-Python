@@ -44,11 +44,7 @@ class SIPPAlgorithm:
                 return ()
 
             permanent_from = reservations.permanent.get(coord)
-            blocked_times = sorted(
-                time
-                for time, coords in reservations.vertex.items()
-                if time <= max_time and coord in coords and (permanent_from is None or time < permanent_from)
-            )
+            blocked_times = reservations.reserved_times(coord, max_time=max_time, before=permanent_from)
 
             intervals: list[tuple[int, int]] = []
             current_start = 0

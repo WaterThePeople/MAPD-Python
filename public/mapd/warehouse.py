@@ -40,6 +40,7 @@ class WarehouseMap:
         self._neighbors_cache: dict[Coord, tuple[Coord, ...]] = {}
         self._pickup_positions_cache: dict[int, frozenset[Coord]] = {}
         self._delivery_positions_cache: frozenset[Coord] | None = None
+        self._traversable_goals_cache: dict[frozenset[Coord], frozenset[Coord]] = {}
         self._distance_map_cache: dict[frozenset[Coord], dict[Coord, int]] = {}
 
         self.traversable: set[Coord] = set()
@@ -109,7 +110,11 @@ class WarehouseMap:
         return resolved
 
     def distance_to_nearest(self, src: Coord, goals: set[Coord] | frozenset[Coord]) -> int | None:
-        traversable_goals = frozenset(goal for goal in goals if goal in self.traversable)
+        goals_key = goals if isinstance(goals, frozenset) else frozenset(goals)
+        traversable_goals = self._traversable_goals_cache.get(goals_key)
+        if traversable_goals is None:
+            traversable_goals = frozenset(goal for goal in goals_key if goal in self.traversable)
+            self._traversable_goals_cache[goals_key] = traversable_goals
         if not traversable_goals:
             return None
 

@@ -1,5 +1,4 @@
 import colorsys
-import heapq
 import time
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -7,15 +6,13 @@ from functools import lru_cache
 
 from mapd.algorithms import get_algorithm, normalize_algorithm_name
 from mapd.algorithms.base import SearchProblem, reconstruct_path
-from mapd.collisions import total_collision_count
 from mapd.models import AgentPlan, Coord, PlanningStats, Task
 from mapd.strategy import get_strategy
 from mapd.warehouse import WarehouseMap
 
-SOFT_COLLISION_PENALTY = 1000
-SMALL_PLANNING_ORDER_ATTEMPTS = 5
-MEDIUM_PLANNING_ORDER_ATTEMPTS = 10
-LARGE_PLANNING_ORDER_ATTEMPTS = 15
+SMALL_PLANNING_ORDER_ATTEMPTS = 4
+MEDIUM_PLANNING_ORDER_ATTEMPTS = 6
+LARGE_PLANNING_ORDER_ATTEMPTS = 8
 WHCA_WINDOW_SIZE = 32
 WHCA_MAX_TIME_FACTOR = 24
 WHCA_MIN_STALL_WINDOWS = 24
@@ -35,12 +32,22 @@ class WindowAgentProgress:
 class ReservationTable:
     def __init__(self) -> None:
         self.vertex = defaultdict(set)
+        self.vertex_by_coord = defaultdict(set)
         self.edge = defaultdict(set)
         self.permanent = {}
         self.latest_time = 0
 
+    def reserve_vertex(self, coord: Coord, time: int) -> None:
+        self.vertex[time].add(coord)
+        self.vertex_by_coord[coord].add(time)
+
+    def reserve_permanent(self, coord: Coord, time: int) -> None:
+        existing = self.permanent.get(coord)
+        self.permanent[coord] = time if existing is None else min(existing, time)
+
     def is_vertex_reserved(self, coord: Coord, time: int) -> bool:
-        if coord in self.vertex[time]:
+        reserved_times = self.vertex_by_coord.get(coord)
+        if reserved_times is not None and time in reserved_times:
             return True
 
         permanent_from = self.permanent.get(coord)
@@ -51,7 +58,7 @@ class ReservationTable:
 
     def reserve_path(self, path: list[Coord], permanent_final: bool = True) -> None:
         for time, coord in enumerate(path):
-            self.vertex[time].add(coord)
+            self.reserve_vertex(coord, time)
 
         for time in range(len(path) - 1):
             self.edge[time].add((path[time], path[time + 1]))
@@ -59,9 +66,33 @@ class ReservationTable:
         if permanent_final:
             final_coord = path[-1]
             final_time = len(path) - 1
-            existing = self.permanent.get(final_coord)
-            self.permanent[final_coord] = final_time if existing is None else min(existing, final_time)
+            self.reserve_permanent(final_coord, final_time)
             self.latest_time = max(self.latest_time, final_time)
+
+    def reserved_times(
+        self,
+        coord: Coord,
+        *,
+        max_time: int | None = None,
+        before: int | None = None,
+    ) -> tuple[int, ...]:
+        times = self.vertex_by_coord.get(coord)
+        if not times:
+            return ()
+
+        return tuple(
+            sorted(
+                time
+                for time in times
+                if (max_time is None or time <= max_time) and (before is None or time < before)
+            )
+        )
+
+    def latest_vertex_time(self, coord: Coord) -> int:
+        times = self.vertex_by_coord.get(coord)
+        if not times:
+            return -1
+        return max(times)
 
 
 @lru_cache(maxsize=None)
@@ -194,100 +225,6 @@ def merge_segments(base_path: list[Coord], segment: list[Coord]) -> list[Coord]:
     if not base_path:
         return segment[:]
     return [*base_path, *segment[1:]]
-
-
-def find_soft_path(
-    warehouse: WarehouseMap,
-    reservations: ReservationTable,
-    start: Coord,
-    start_time: int,
-    goals: set[Coord],
-    blocked_cells: set[Coord] | None = None,
-    goal_available_after: dict[Coord, int] | None = None,
-    *,
-    max_expansions: int | None = None,
-    deadline: float | None = None,
-) -> list[Coord]:
-    if blocked_cells is None:
-        blocked_cells = set()
-    if goal_available_after is None:
-        goal_available_after = {}
-    if not goals:
-        raise RuntimeError("Could not find a relaxed path because no goal cells were available.")
-
-    max_time = start_time + warehouse.cell_count * 12 + reservations.latest_time + 50
-    start_state = (start, start_time)
-    frontier: list[tuple[int, int, int, int, tuple[Coord, int]]] = [
-        (goal_heuristic(warehouse, start, goals), 0, descending_coord_priority(warehouse, start), 0, start_state)
-    ]
-    came_from: dict[tuple[Coord, int], tuple[Coord, int]] = {}
-    cost_so_far: dict[tuple[Coord, int], int] = {start_state: 0}
-    tie_counter = 0
-    expanded_states = 0
-
-    while frontier:
-        if deadline is not None and time.perf_counter() >= deadline:
-            raise RuntimeError("Relaxed path search exceeded the time budget.")
-
-        _, _, _, _, current = heapq.heappop(frontier)
-        current_cost = cost_so_far.get(current)
-        if current_cost is None:
-            continue
-        expanded_states += 1
-        if max_expansions is not None and expanded_states > max_expansions:
-            raise RuntimeError(
-                f"Relaxed path search exceeded the expansion budget ({max_expansions} states)."
-            )
-
-        coord, current_time = current
-        if coord in goals:
-            states = reconstruct_path(came_from, current)
-            return [state_coord for state_coord, _ in states]
-        if current_time >= max_time:
-            continue
-
-        next_positions = [coord]
-        next_positions.extend(warehouse.neighbors(coord))
-
-        for next_coord in next_positions:
-            if next_coord in blocked_cells:
-                continue
-
-            next_time = current_time + 1
-            penalty = 0
-            if reservations.is_vertex_reserved(next_coord, next_time):
-                penalty += SOFT_COLLISION_PENALTY
-            if reservations.is_edge_conflict(coord, next_coord, current_time):
-                penalty += SOFT_COLLISION_PENALTY
-
-            available_after = goal_available_after.get(next_coord)
-            if available_after is not None and next_time < available_after:
-                penalty += (available_after - next_time) * SOFT_COLLISION_PENALTY
-
-            next_state = (next_coord, next_time)
-            next_cost = current_cost + 1 + penalty
-            known_cost = cost_so_far.get(next_state)
-            if known_cost is not None and next_cost >= known_cost:
-                continue
-
-            cost_so_far[next_state] = next_cost
-            came_from[next_state] = current
-            tie_counter += 1
-            priority = next_cost + goal_heuristic(warehouse, next_coord, goals)
-            heapq.heappush(
-                frontier,
-                (
-                    priority,
-                    penalty,
-                    descending_coord_priority(warehouse, next_coord),
-                    tie_counter,
-                    next_state,
-                ),
-            )
-
-    raise RuntimeError(
-        f"Could not find a relaxed path from {start} at time {start_time} within {max_time - start_time} steps."
-    )
 
 
 def wait_until_time(
@@ -451,7 +388,7 @@ def assign_available_tasks(
     availability = {}
     distance_cache = {}
     delivery_cache = {}
-    delivery_goals = set(warehouse.delivery_positions())
+    delivery_goals = warehouse.delivery_positions()
     assigned_tasks = []
     decision_time = 0
 
@@ -567,14 +504,14 @@ def reserve_initial_positions(
     for agent_id, home in homes.items():
         tasks = tasks_by_agent.get(agent_id, [])
         if not tasks:
-            reservations.vertex[0].add(home)
-            reservations.permanent[home] = 0
+            reservations.reserve_vertex(home, 0)
+            reservations.reserve_permanent(home, 0)
             reservations.latest_time = max(reservations.latest_time, 0)
             continue
 
         first_release = min(task.release_time for task in tasks)
         for time in range(first_release + 1):
-            reservations.vertex[time].add(home)
+            reservations.reserve_vertex(home, time)
         reservations.latest_time = max(reservations.latest_time, first_release)
 
 
@@ -593,7 +530,7 @@ def reserve_state_positions(
             continue
         hold_until = max(0, hold_untils.get(agent_id, 0))
         for time in range(hold_until + 1):
-            reservations.vertex[time].add(start_positions[agent_id])
+            reservations.reserve_vertex(start_positions[agent_id], time)
         reservations.latest_time = max(reservations.latest_time, hold_until)
     if pending_agent_ids:
         reservations.latest_time = max(reservations.latest_time, 0)
@@ -611,7 +548,7 @@ def reserve_forced_waits(
             continue
         coord = start_positions[agent_id]
         for time in range(1, duration + 1):
-            reservations.vertex[time].add(coord)
+            reservations.reserve_vertex(coord, time)
         reservations.latest_time = max(reservations.latest_time, duration)
 
 
@@ -625,7 +562,7 @@ def estimate_finish_times(
     estimates: dict[int, int] = {}
     distance_cache: dict[tuple[int, int], int] = {}
     delivery_cache: dict[int, int] = {}
-    delivery_goals = set(warehouse.delivery_positions())
+    delivery_goals = warehouse.delivery_positions()
 
     for agent_id, tasks in tasks_by_agent.items():
         home = homes[agent_id]
@@ -796,13 +733,7 @@ def goal_availability(
 ) -> tuple[set[Coord], dict[Coord, int]]:
     permanently_taken = set(reservations.permanent.keys()) & goals
     available_goals = goals - permanently_taken
-    latest_visit: dict[Coord, int] = {goal: -1 for goal in available_goals}
-
-    for time, coords in reservations.vertex.items():
-        for coord in coords:
-            if coord in latest_visit and time > latest_visit[coord]:
-                latest_visit[coord] = time
-
+    latest_visit = {goal: reservations.latest_vertex_time(goal) for goal in available_goals}
     available_after = {goal: latest_time + 1 for goal, latest_time in latest_visit.items()}
     return available_goals, available_after
 
@@ -845,25 +776,11 @@ def plan_return_to_station(
     algorithm: str,
     blocked_cells: set[Coord],
     *,
-    soft: bool = False,
-    soft_max_expansions: int | None = None,
     deadline: float | None = None,
 ) -> list[Coord]:
     return_goals, goal_available_after = available_station_goals(reservations, warehouse, home, station_mode)
     if not return_goals:
         raise RuntimeError("No free station available for return.")
-    if soft:
-        return find_soft_path(
-            warehouse,
-            reservations,
-            current,
-            current_time,
-            return_goals,
-            blocked_cells=blocked_cells,
-            goal_available_after=goal_available_after,
-            max_expansions=soft_max_expansions,
-            deadline=deadline,
-        )
     return find_path(
         warehouse,
         reservations,
@@ -940,8 +857,7 @@ def build_reservations_from_state(
             continue
         coord = start_positions[agent_id]
         if coord in station_cells:
-            existing = reservations.permanent.get(coord)
-            reservations.permanent[coord] = 0 if existing is None else min(existing, 0)
+            reservations.reserve_permanent(coord, 0)
     for agent_id in sorted(plans_by_id):
         reserve_agent_plan(reservations, plans_by_id[agent_id], station_cells)
     return reservations
@@ -966,7 +882,7 @@ def build_agent_plan(
     pickup_times = {}
     completion_times = {}
     missed_deadlines = []
-    delivery_goals = set(warehouse.delivery_positions())
+    delivery_goals = warehouse.delivery_positions()
 
     for task_index, task in enumerate(agent_tasks):
         if current_time < task.release_time:
@@ -1071,7 +987,7 @@ def build_agent_plan_from_state(
     missed_deadlines: list[int] = []
     delayed_times: set[int] = set()
     failure_start_times: set[int] = set()
-    delivery_goals = set(warehouse.delivery_positions())
+    delivery_goals = warehouse.delivery_positions()
     station_goals = station_goals_for_mode(warehouse, home, station_mode)
 
     if initial_wait > 0:
@@ -1209,120 +1125,6 @@ def build_agent_plan_from_state(
     )
 
 
-def build_soft_agent_plan(
-    warehouse: WarehouseMap,
-    reservations: ReservationTable,
-    agent_id: int,
-    home: Coord,
-    home_index: int,
-    color: tuple[int, int, int],
-    agent_tasks: list[Task],
-    station_mode: str,
-    blocked_cells: set[Coord],
-    *,
-    soft_max_expansions: int | None = None,
-    deadline: float | None = None,
-) -> AgentPlan:
-    current = home
-    current_time = 0
-    path = [home]
-    pickup_times = {}
-    completion_times = {}
-    missed_deadlines = []
-    delivery_goals = set(warehouse.delivery_positions())
-    station_goals = station_goals_for_mode(warehouse, home, station_mode)
-
-    for task_index, task in enumerate(agent_tasks):
-        if deadline is not None and time.perf_counter() >= deadline:
-            raise RuntimeError("Relaxed planning exceeded the time budget.")
-
-        if current_time < task.release_time:
-            if current not in station_goals:
-                return_path = plan_return_to_station(
-                    warehouse,
-                    reservations,
-                    current,
-                    current_time,
-                    home,
-                    station_mode,
-                    "A*",
-                    blocked_cells,
-                    soft=True,
-                    soft_max_expansions=soft_max_expansions,
-                    deadline=deadline,
-                )
-                path = merge_segments(path, return_path)
-                current = path[-1]
-                current_time = len(path) - 1
-            while len(path) - 1 < task.release_time:
-                path.append(path[-1])
-            current = path[-1]
-            current_time = len(path) - 1
-
-        pickup_goals = warehouse.pickup_positions(task.shelf_index)
-        to_pickup = find_soft_path(
-            warehouse,
-            reservations,
-            current,
-            current_time,
-            pickup_goals,
-            blocked_cells=blocked_cells,
-            max_expansions=soft_max_expansions,
-            deadline=deadline,
-        )
-        path = merge_segments(path, to_pickup)
-        current = path[-1]
-        current_time = len(path) - 1
-        pickup_times[task.task_id] = current_time
-
-        to_delivery = find_soft_path(
-            warehouse,
-            reservations,
-            current,
-            current_time,
-            delivery_goals,
-            blocked_cells=blocked_cells,
-            max_expansions=soft_max_expansions,
-            deadline=deadline,
-        )
-        path = merge_segments(path, to_delivery)
-        current = path[-1]
-        current_time = len(path) - 1
-        completion_times[task.task_id] = current_time
-        if task.deadline is not None and current_time > task.deadline:
-            missed_deadlines.append(task.task_id)
-
-        if should_return_to_station_after_delivery(agent_tasks, task_index, current_time):
-            back_to_station = plan_return_to_station(
-                warehouse,
-                reservations,
-                current,
-                current_time,
-                home,
-                station_mode,
-                "A*",
-                blocked_cells,
-                soft=True,
-                soft_max_expansions=soft_max_expansions,
-                deadline=deadline,
-            )
-            path = merge_segments(path, back_to_station)
-            current = path[-1]
-            current_time = len(path) - 1
-
-    return AgentPlan(
-        agent_id=agent_id,
-        color=color,
-        home=home,
-        home_index=home_index,
-        path=path,
-        tasks=agent_tasks,
-        pickup_times=pickup_times,
-        completion_times=completion_times,
-        missed_deadlines=missed_deadlines,
-    )
-
-
 def finished_station_conflicts(
     path: list[Coord],
     plans_by_id: dict[int, AgentPlan],
@@ -1431,8 +1233,6 @@ def build_agent_plans_once(
     station_mode: str,
     algorithm: str,
     *,
-    allow_soft_collisions: bool = False,
-    soft_max_expansions: int | None = None,
     deadline: float | None = None,
     stats: PlanningStats | None = None,
 ) -> list[AgentPlan]:
@@ -1454,36 +1254,19 @@ def build_agent_plans_once(
                 pending_agent_ids,
                 station_cells,
             )
-            try:
-                plan = build_agent_plan(
-                    warehouse=warehouse,
-                    reservations=reservations,
-                    agent_id=agent_id,
-                    home=home,
-                    home_index=warehouse.coord_to_index(home),
-                    color=colors[agent_id],
-                    agent_tasks=tasks_by_agent[agent_id],
-                    station_mode=station_mode,
-                    algorithm=algorithm,
-                    blocked_cells=blocked_cells,
-                    deadline=deadline,
-                )
-            except RuntimeError:
-                if not allow_soft_collisions:
-                    raise
-                plan = build_soft_agent_plan(
-                    warehouse=warehouse,
-                    reservations=reservations,
-                    agent_id=agent_id,
-                    home=home,
-                    home_index=warehouse.coord_to_index(home),
-                    color=colors[agent_id],
-                    agent_tasks=tasks_by_agent[agent_id],
-                    station_mode=station_mode,
-                    blocked_cells=blocked_cells,
-                    soft_max_expansions=soft_max_expansions,
-                    deadline=deadline,
-                )
+            plan = build_agent_plan(
+                warehouse=warehouse,
+                reservations=reservations,
+                agent_id=agent_id,
+                home=home,
+                home_index=warehouse.coord_to_index(home),
+                color=colors[agent_id],
+                agent_tasks=tasks_by_agent[agent_id],
+                station_mode=station_mode,
+                algorithm=algorithm,
+                blocked_cells=blocked_cells,
+                deadline=deadline,
+            )
 
             failed_blocker = None
             for _, last_use_time, blocker_id in finished_station_conflicts(plan.path, plans_by_id, station_cells):
@@ -1600,6 +1383,21 @@ def reserve_dynamic_step_plan(
     reservations.reserve_path(plan.path, permanent_final=permanent_final)
 
 
+def reserve_fixed_plan_suffixes(
+    reservations: ReservationTable,
+    fixed_plans_by_id: dict[int, AgentPlan],
+    current_offset: int,
+) -> None:
+    for plan in fixed_plans_by_id.values():
+        if not plan.path:
+            continue
+        if current_offset < len(plan.path):
+            suffix_path = plan.path[current_offset:]
+        else:
+            suffix_path = [plan.path[-1]]
+        reservations.reserve_path(suffix_path, permanent_final=True)
+
+
 def dynamic_step_hold_untils(
     tasks_by_agent: dict[int, list[Task]],
     carrying_by_agent: dict[int, bool],
@@ -1627,8 +1425,12 @@ def build_dynamic_step_reservations(
     carrying_by_agent: dict[int, bool],
     *,
     exclude_agent_id: int | None = None,
+    fixed_plans_by_id: dict[int, AgentPlan] | None = None,
+    fixed_time_offset: int = 0,
 ) -> ReservationTable:
     reservations = ReservationTable()
+    if fixed_plans_by_id:
+        reserve_fixed_plan_suffixes(reservations, fixed_plans_by_id, fixed_time_offset)
     if pending_agent_ids:
         reserve_state_positions(
             reservations,
@@ -1651,8 +1453,7 @@ def build_dynamic_step_reservations(
             continue
         coord = start_positions[agent_id]
         if coord in station_cells:
-            existing = reservations.permanent.get(coord)
-            reservations.permanent[coord] = 0 if existing is None else min(existing, 0)
+            reservations.reserve_permanent(coord, 0)
 
     for agent_id in sorted(planned_steps_by_id):
         plan = planned_steps_by_id[agent_id]
@@ -1693,7 +1494,7 @@ def build_dynamic_step_plan_from_state(
     missed_deadlines: list[int] = []
     delayed_times: set[int] = set()
     failure_start_times: set[int] = set()
-    delivery_goals = set(warehouse.delivery_positions())
+    delivery_goals = warehouse.delivery_positions()
     station_goals = station_goals_for_mode(warehouse, home, station_mode)
 
     if initial_wait > 0:
@@ -1872,9 +1673,11 @@ def build_dynamic_agent_plans_from_state_once(
     algorithm: str,
     stats: PlanningStats | None = None,
     deadline: float | None = None,
+    fixed_plans: list[AgentPlan] | None = None,
 ) -> list[AgentPlan]:
     station_cells = set(warehouse.stations)
     current_absolute_time = absolute_start_time
+    fixed_plans_by_id = {plan.agent_id: plan for plan in fixed_plans or []}
     remaining_tasks = {agent_id: list(tasks_by_agent[agent_id]) for agent_id in tasks_by_agent}
     carrying = {agent_id: bool(carrying_by_agent.get(agent_id, False)) for agent_id in tasks_by_agent}
     current_positions = {agent_id: start_positions[agent_id] for agent_id in tasks_by_agent}
@@ -1927,6 +1730,8 @@ def build_dynamic_agent_plans_from_state_once(
                         remaining_tasks,
                         carrying,
                         exclude_agent_id=agent_id,
+                        fixed_plans_by_id=fixed_plans_by_id,
+                        fixed_time_offset=current_absolute_time - absolute_start_time,
                     )
                     candidate_steps_by_id[agent_id] = build_dynamic_step_plan_from_state(
                         warehouse=warehouse,
@@ -2038,7 +1843,14 @@ def build_dynamic_agent_plans_from_state_once(
         )
         for agent_id in sorted(tasks_by_agent)
     ]
-    return return_completed_agents_to_stations(warehouse, plans, station_mode, algorithm, deadline=deadline)
+    return return_completed_agents_to_stations(
+        warehouse,
+        plans,
+        station_mode,
+        algorithm,
+        deadline=deadline,
+        fixed_plans=list(fixed_plans_by_id.values()),
+    )
 
 
 def build_dynamic_agent_plans_once(
@@ -2067,6 +1879,7 @@ def build_dynamic_agent_plans_once(
         algorithm=algorithm,
         stats=stats,
         deadline=deadline,
+        fixed_plans=None,
     )
 
 
@@ -2089,8 +1902,13 @@ def build_final_return_reservations(
     plans: list[AgentPlan],
     *,
     exclude_agent_id: int | None = None,
+    fixed_plans: list[AgentPlan] | None = None,
 ) -> ReservationTable:
     reservations = ReservationTable()
+    if fixed_plans:
+        for plan in fixed_plans:
+            if plan.path:
+                reservations.reserve_path(plan.path, permanent_final=True)
     for plan in plans:
         if plan.agent_id == exclude_agent_id:
             continue
@@ -2104,6 +1922,7 @@ def return_completed_agents_to_stations(
     station_mode: str,
     algorithm: str,
     deadline: float | None = None,
+    fixed_plans: list[AgentPlan] | None = None,
 ) -> list[AgentPlan]:
     updated_plans = [plan for plan in plans]
     station_cells = set(warehouse.stations)
@@ -2119,7 +1938,11 @@ def return_completed_agents_to_stations(
         if missing_waits > 0:
             waited_path.extend([waited_path[-1]] * missing_waits)
 
-        reservations = build_final_return_reservations(updated_plans, exclude_agent_id=plan.agent_id)
+        reservations = build_final_return_reservations(
+            updated_plans,
+            exclude_agent_id=plan.agent_id,
+            fixed_plans=fixed_plans,
+        )
         final_return = find_path(
             warehouse,
             reservations,
@@ -2227,24 +2050,9 @@ def window_path_search(
     algorithm: str,
     blocked_cells: set[Coord],
     *,
-    allow_soft_collisions: bool,
     goal_available_after: dict[Coord, int] | None = None,
-    soft_max_expansions: int | None = None,
     deadline: float | None = None,
 ) -> list[Coord]:
-    if allow_soft_collisions:
-        return find_soft_path(
-            warehouse,
-            reservations,
-            start,
-            start_time,
-            goals,
-            blocked_cells=blocked_cells,
-            goal_available_after=goal_available_after,
-            max_expansions=soft_max_expansions,
-            deadline=deadline,
-        )
-
     return find_path(
         warehouse,
         reservations,
@@ -2268,8 +2076,6 @@ def extend_windowed_agent_progress(
     algorithm: str,
     blocked_cells: set[Coord],
     *,
-    allow_soft_collisions: bool = False,
-    soft_max_expansions: int | None = None,
     deadline: float | None = None,
     window_size: int = WHCA_WINDOW_SIZE,
 ) -> None:
@@ -2278,7 +2084,7 @@ def extend_windowed_agent_progress(
     segment = [progress.path[-1]]
     current = segment[-1]
     current_time = base_time
-    delivery_goals = set(warehouse.delivery_positions())
+    delivery_goals = warehouse.delivery_positions()
     station_goals = station_goals_for_mode(warehouse, home, station_mode)
 
     while current_time < window_end:
@@ -2294,8 +2100,6 @@ def extend_windowed_agent_progress(
                 station_goals,
                 algorithm,
                 blocked_cells,
-                allow_soft_collisions=allow_soft_collisions,
-                soft_max_expansions=soft_max_expansions,
                 deadline=deadline,
             )
             prefix = truncate_path_to_steps(full_path, window_end - current_time)
@@ -2318,8 +2122,6 @@ def extend_windowed_agent_progress(
                 delivery_goals,
                 algorithm,
                 blocked_cells,
-                allow_soft_collisions=allow_soft_collisions,
-                soft_max_expansions=soft_max_expansions,
                 deadline=deadline,
             )
             prefix = truncate_path_to_steps(full_path, window_end - current_time)
@@ -2370,8 +2172,6 @@ def extend_windowed_agent_progress(
             pickup_goals,
             algorithm,
             blocked_cells,
-            allow_soft_collisions=allow_soft_collisions,
-            soft_max_expansions=soft_max_expansions,
             deadline=deadline,
         )
         prefix = truncate_path_to_steps(full_path, window_end - current_time)
@@ -2409,8 +2209,6 @@ def build_whca_agent_plans_once(
     station_mode: str,
     algorithm: str,
     *,
-    allow_soft_collisions: bool = False,
-    soft_max_expansions: int | None = None,
     deadline: float | None = None,
 ) -> list[AgentPlan]:
     progress_by_id = {
@@ -2456,8 +2254,6 @@ def build_whca_agent_plans_once(
                 station_mode=station_mode,
                 algorithm=algorithm,
                 blocked_cells=set(),
-                allow_soft_collisions=allow_soft_collisions,
-                soft_max_expansions=soft_max_expansions,
                 deadline=deadline,
             )
 
@@ -2579,6 +2375,7 @@ def build_agent_plans_from_state(
     algorithm: str,
     stats: PlanningStats | None = None,
     deadline: float | None = None,
+    fixed_plans: list[AgentPlan] | None = None,
 ) -> list[AgentPlan]:
     ordering_positions = {agent_id: start_positions[agent_id] for agent_id in tasks_by_agent}
     planning_orders = build_planning_orders(
@@ -2610,6 +2407,7 @@ def build_agent_plans_from_state(
                 algorithm=algorithm,
                 stats=stats,
                 deadline=deadline,
+                fixed_plans=fixed_plans,
             )
         except RuntimeError as exc:
             last_error = exc
@@ -2620,102 +2418,3 @@ def build_agent_plans_from_state(
     raise RuntimeError(
         f"Could not find a collision-free suffix plan after {attempts} planning attempts. Last error: {last_error}"
     )
-
-
-def build_relaxed_agent_plans(
-    warehouse: WarehouseMap,
-    agent_count: int,
-    tasks: list[Task],
-    mode: str,
-    station_mode: str,
-    strategy: str,
-    algorithm: str,
-    *,
-    time_budget_seconds: float | None = None,
-    soft_max_expansions: int | None = None,
-    stats: PlanningStats | None = None,
-    deadline: float | None = None,
-) -> list[AgentPlan]:
-    _, tasks_by_agent, homes, station_cells, colors = prepare_planning_inputs(
-        warehouse,
-        agent_count,
-        tasks,
-        mode,
-        station_mode,
-        strategy,
-        algorithm,
-        deadline=deadline,
-    )
-    planning_orders = build_planning_orders(
-        warehouse,
-        tasks_by_agent,
-        homes,
-        station_mode,
-        algorithm,
-        deadline=deadline,
-    )
-    use_whca = is_windowed_algorithm(algorithm)
-    effective_deadline = deadline
-    if effective_deadline is None and time_budget_seconds is not None:
-        effective_deadline = time.perf_counter() + max(0.0, time_budget_seconds)
-
-    best_plans: list[AgentPlan] | None = None
-    best_score: tuple[int, int, int] | None = None
-    last_error: RuntimeError | None = None
-
-    for attempt_index, planning_order in enumerate(planning_orders):
-        if attempt_index > 0 and stats is not None:
-            stats.note_planning_attempt_replan()
-        if effective_deadline is not None and time.perf_counter() >= effective_deadline:
-            last_error = RuntimeError("Fallback planning exceeded the time budget.")
-            break
-        try:
-            if use_whca:
-                plans = build_whca_agent_plans_once(
-                    warehouse,
-                    tasks_by_agent,
-                    homes,
-                    colors,
-                    planning_order,
-                    station_mode,
-                    algorithm,
-                    allow_soft_collisions=True,
-                    soft_max_expansions=soft_max_expansions,
-                    deadline=effective_deadline,
-                )
-            else:
-                plans = build_agent_plans_once(
-                    warehouse,
-                    tasks_by_agent,
-                    homes,
-                    station_cells,
-                    colors,
-                    planning_order,
-                    station_mode,
-                    algorithm,
-                    allow_soft_collisions=True,
-                    soft_max_expansions=soft_max_expansions,
-                    deadline=effective_deadline,
-                    stats=stats,
-                )
-        except RuntimeError as exc:
-            last_error = exc
-            continue
-
-        collision_count = total_collision_count(plans)
-        makespan = max((len(plan.path) for plan in plans), default=1) - 1
-        total_path_length = sum(len(plan.path) - 1 for plan in plans)
-        score = (collision_count, makespan, total_path_length)
-        if best_score is None or score < best_score:
-            best_score = score
-            best_plans = plans
-            if collision_count == 0:
-                break
-
-    if best_plans is not None:
-        return best_plans
-
-    attempts = len(planning_orders)
-    if last_error is None:
-        raise RuntimeError(f"Could not build a fallback plan after {attempts} planning attempts.")
-    raise RuntimeError(f"Could not build a fallback plan after {attempts} planning attempts. Last error: {last_error}")
