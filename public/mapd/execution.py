@@ -7,8 +7,13 @@ from mapd.collisions import frame_agent_positions
 from mapd.models import AgentPlan, FAILURE_MODEL_CHOICES, PlanningStats, ScenarioMetadata, Task
 from mapd.planner import build_agent_plans_from_state
 
-LOCAL_FAILURE_REPLAN_RADIUS = 8
-LOCAL_FAILURE_REPLAN_MAX_EXPANSIONS = 3
+LOCAL_FAILURE_SMALL_REPLAN_RADIUS = 8
+LOCAL_FAILURE_MEDIUM_REPLAN_RADIUS = 12
+LOCAL_FAILURE_LARGE_REPLAN_RADIUS = 16
+LOCAL_FAILURE_SMALL_REPLAN_EXPANSIONS = 3
+LOCAL_FAILURE_MEDIUM_REPLAN_EXPANSIONS = 4
+LOCAL_FAILURE_LARGE_REPLAN_EXPANSIONS = 5
+LOCAL_FAILURE_WAIT_REPAIR_MULTIPLIER = 3
 
 
 def should_trigger_delay(seed: int, agent_id: int, time_step: int, probability: float) -> bool:
@@ -119,6 +124,45 @@ def inject_delay_into_plan(plan: AgentPlan, event_time: int, duration: int) -> A
     )
 
 
+def insert_wait_into_plan(plan: AgentPlan, event_time: int, duration: int) -> AgentPlan:
+    if duration <= 0:
+        return plan
+
+    event_position = plan_position_at_time(plan, event_time)
+    prefix_path = plan.path[: min(event_time + 1, len(plan.path))]
+    if not prefix_path:
+        prefix_path = [event_position]
+    while len(prefix_path) <= event_time:
+        prefix_path.append(event_position)
+
+    suffix_path = plan.path[event_time + 1 :] if event_time + 1 < len(plan.path) else []
+    path = prefix_path + [event_position] * duration + suffix_path
+
+    pickup_times = shifted_times_after_event(plan.pickup_times, event_time, duration)
+    completion_times = shifted_times_after_event(plan.completion_times, event_time, duration)
+    missed_deadlines = [
+        task.task_id
+        for task in plan.tasks
+        if task.deadline is not None
+        and completion_times.get(task.task_id) is not None
+        and completion_times[task.task_id] > task.deadline
+    ]
+
+    return AgentPlan(
+        agent_id=plan.agent_id,
+        color=plan.color,
+        home=plan.home,
+        home_index=plan.home_index,
+        path=path,
+        tasks=plan.tasks,
+        pickup_times=pickup_times,
+        completion_times=completion_times,
+        missed_deadlines=missed_deadlines,
+        delayed_times=shifted_time_set_after_event(plan.delayed_times, event_time, duration),
+        failure_start_times=shifted_time_set_after_event(plan.failure_start_times, event_time, duration),
+    )
+
+
 def inject_failure_delays(
     plans: list[AgentPlan],
     event_time: int,
@@ -183,8 +227,129 @@ def collision_agent_ids(
     return colliding_agent_ids
 
 
+def first_collision(
+    plans: list[AgentPlan],
+    *,
+    start_time: int = 0,
+    focus_agent_ids: set[int] | None = None,
+) -> tuple[int, set[int]] | None:
+    if not plans:
+        return None
+
+    focus = focus_agent_ids
+    max_time = max(len(plan.path) for plan in plans) - 1
+
+    for time_step in range(max(0, start_time), max_time + 1):
+        positions = frame_agent_positions(plans, time_step)
+        occupancy: dict[tuple[int, int], list[int]] = {}
+        for agent_id, coord in positions.items():
+            occupancy.setdefault(coord, []).append(agent_id)
+
+        for agent_ids in occupancy.values():
+            if len(agent_ids) <= 1:
+                continue
+            agent_set = set(agent_ids)
+            if focus is None or agent_set & focus:
+                return time_step, agent_set
+
+        if time_step <= 0:
+            continue
+
+        previous_positions = frame_agent_positions(plans, time_step - 1)
+        agent_ids = sorted(positions)
+        for index, first_agent_id in enumerate(agent_ids):
+            first_coord = positions[first_agent_id]
+            for second_agent_id in agent_ids[index + 1 :]:
+                second_coord = positions[second_agent_id]
+                if first_coord == second_coord:
+                    continue
+                if (
+                    previous_positions[first_agent_id] == second_coord
+                    and previous_positions[second_agent_id] == first_coord
+                ):
+                    agent_set = {first_agent_id, second_agent_id}
+                    if focus is None or agent_set & focus:
+                        return time_step, agent_set
+
+    return None
+
+
 def has_collisions(plans: list[AgentPlan], *, start_time: int = 0) -> bool:
     return bool(collision_agent_ids(plans, start_time=start_time, stop_on_first=True))
+
+
+def local_failure_replan_radius(warehouse) -> int:
+    agent_capacity = len(warehouse.stations)
+    if agent_capacity <= 20:
+        return LOCAL_FAILURE_SMALL_REPLAN_RADIUS
+    if agent_capacity <= 40:
+        return LOCAL_FAILURE_MEDIUM_REPLAN_RADIUS
+    return LOCAL_FAILURE_LARGE_REPLAN_RADIUS
+
+
+def local_failure_replan_max_expansions(warehouse) -> int:
+    agent_capacity = len(warehouse.stations)
+    if agent_capacity <= 20:
+        return LOCAL_FAILURE_SMALL_REPLAN_EXPANSIONS
+    if agent_capacity <= 40:
+        return LOCAL_FAILURE_MEDIUM_REPLAN_EXPANSIONS
+    return LOCAL_FAILURE_LARGE_REPLAN_EXPANSIONS
+
+
+def local_failure_wait_repair_limit(warehouse, new_failures: dict[int, int]) -> int:
+    base_limit = local_failure_replan_radius(warehouse)
+    delay_budget = sum(new_failures.values()) * LOCAL_FAILURE_WAIT_REPAIR_MULTIPLIER
+    return max(base_limit, delay_budget)
+
+
+def repair_collisions_with_local_waits(
+    plans: list[AgentPlan],
+    warehouse,
+    *,
+    start_time: int,
+    new_failures: dict[int, int],
+    deadline: float | None = None,
+) -> list[AgentPlan] | None:
+    repaired_plans = plans[:]
+    failed_agent_ids = set(new_failures)
+    repair_limit = local_failure_wait_repair_limit(warehouse, new_failures)
+
+    for _ in range(repair_limit):
+        if deadline is not None and time.perf_counter() >= deadline:
+            raise RuntimeError("Failure wait repair exceeded the time budget.")
+
+        collision = first_collision(repaired_plans, start_time=start_time)
+        if collision is None:
+            return repaired_plans
+
+        collision_time, colliding_agents = collision
+        plan_by_id = {plan.agent_id: plan for plan in repaired_plans}
+        moving_non_failed = [
+            agent_id
+            for agent_id in sorted(colliding_agents)
+            if agent_id not in failed_agent_ids and collision_time < len(plan_by_id[agent_id].path) - 1
+        ]
+        moving_any = [
+            agent_id
+            for agent_id in sorted(colliding_agents)
+            if collision_time < len(plan_by_id[agent_id].path) - 1
+        ]
+        repair_candidates = moving_non_failed or moving_any
+        if not repair_candidates:
+            return None
+
+        repaired_agent_id = repair_candidates[0]
+        wait_insert_time = max(0, collision_time - 1)
+        repaired_plans = [
+            insert_wait_into_plan(plan, wait_insert_time, 1)
+            if plan.agent_id == repaired_agent_id
+            else plan
+            for plan in repaired_plans
+        ]
+
+    if first_collision(repaired_plans, start_time=start_time) is None:
+        return repaired_plans
+    return None
 
 
 def fixed_suffix_plan(plan: AgentPlan, event_time: int) -> AgentPlan:
@@ -212,7 +377,7 @@ def local_replan_agent_ids(
     event_time: int,
     new_failures: dict[int, int],
     *,
-    radius: int = LOCAL_FAILURE_REPLAN_RADIUS,
+    radius: int,
 ) -> set[int]:
     failed_agent_ids = set(new_failures)
     selected = set(failed_agent_ids)
@@ -417,6 +582,7 @@ def replan_after_failures(
         stats=stats,
         deadline=deadline,
         fixed_plans=fixed_plans,
+        planning_attempt_agent_count=len(plans),
     )
 
 
@@ -459,25 +625,45 @@ def apply_agent_delay_model(
 
         event_time, new_failures = next_event
         injected_plans = inject_failure_delays(current_plans, event_time, new_failures)
-        if not has_collisions(injected_plans, start_time=event_time + 1):
-            current_plans = injected_plans
+        start_repair_time = event_time + 1
+        wait_repaired_plans = repair_collisions_with_local_waits(
+            injected_plans,
+            warehouse,
+            start_time=start_repair_time,
+            new_failures=new_failures,
+            deadline=deadline,
+        )
+        if wait_repaired_plans is not None:
+            current_plans = wait_repaired_plans
         else:
             local_agent_ids: set[int] = set()
             if stats is not None:
                 stats.note_failure_replan()
             last_local_error: RuntimeError | None = None
+            base_radius = local_failure_replan_radius(warehouse)
+            max_expansions = local_failure_replan_max_expansions(warehouse)
 
-            for expansion_index in range(LOCAL_FAILURE_REPLAN_MAX_EXPANSIONS):
-                radius = LOCAL_FAILURE_REPLAN_RADIUS * (expansion_index + 1)
-                local_agent_ids.update(
-                    local_replan_agent_ids(
-                        warehouse,
-                        injected_plans,
-                        event_time,
-                        new_failures,
-                        radius=radius,
-                    )
+            local_agent_ids.update(new_failures)
+            local_agent_ids.update(
+                collision_agent_ids(
+                    injected_plans,
+                    start_time=start_repair_time,
+                    focus_agent_ids=set(new_failures),
                 )
+            )
+
+            for expansion_index in range(max_expansions + 1):
+                if expansion_index > 0:
+                    radius = base_radius * expansion_index
+                    local_agent_ids.update(
+                        local_replan_agent_ids(
+                            warehouse,
+                            injected_plans,
+                            event_time,
+                            new_failures,
+                            radius=radius,
+                        )
+                    )
 
                 try:
                     candidate_plans = merge_replanned_plans(
@@ -499,7 +685,18 @@ def apply_agent_delay_model(
                     last_local_error = exc
                     continue
 
-                colliding_agents = collision_agent_ids(candidate_plans, start_time=event_time + 1)
+                wait_repaired_candidate = repair_collisions_with_local_waits(
+                    candidate_plans,
+                    warehouse,
+                    start_time=start_repair_time,
+                    new_failures=new_failures,
+                    deadline=deadline,
+                )
+                if wait_repaired_candidate is not None:
+                    current_plans = wait_repaired_candidate
+                    break
+
+                colliding_agents = collision_agent_ids(candidate_plans, start_time=start_repair_time)
                 if not colliding_agents:
                     current_plans = candidate_plans
                     break
@@ -511,7 +708,7 @@ def apply_agent_delay_model(
                     raise last_local_error
                 raise RuntimeError("Local replanning after agent delay failed.")
 
-            if has_collisions(current_plans, start_time=event_time + 1):
+            if has_collisions(current_plans, start_time=start_repair_time):
                 raise RuntimeError("Local replanning after agent delay produced a colliding plan.")
 
         failure_count += len(new_failures)

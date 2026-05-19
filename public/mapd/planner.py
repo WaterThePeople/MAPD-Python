@@ -10,10 +10,15 @@ from mapd.models import AgentPlan, Coord, PlanningStats, Task
 from mapd.strategy import get_strategy
 from mapd.warehouse import WarehouseMap
 
-SMALL_PLANNING_ORDER_ATTEMPTS = 4
-MEDIUM_PLANNING_ORDER_ATTEMPTS = 6
-LARGE_PLANNING_ORDER_ATTEMPTS = 8
-WHCA_WINDOW_SIZE = 32
+SMALL_PLANNING_ORDER_ATTEMPTS = 5
+MEDIUM_PLANNING_ORDER_ATTEMPTS = 10
+LARGE_PLANNING_ORDER_ATTEMPTS = 15
+WHCA_SMALL_WINDOW_SIZE = 32
+WHCA_MEDIUM_WINDOW_SIZE = 64
+WHCA_LARGE_WINDOW_SIZE = 96
+WHCA_TARGET_BUFFER = 16
+WHCA_MAX_WINDOW_MULTIPLIER = 2
+WHCA_WINDOW_SIZE = WHCA_SMALL_WINDOW_SIZE
 WHCA_MAX_TIME_FACTOR = 24
 WHCA_MIN_STALL_WINDOWS = 24
 
@@ -660,6 +665,7 @@ def build_planning_orders(
     station_mode: str,
     algorithm: str,
     deadline: float | None = None,
+    attempt_limit_agent_count: int | None = None,
 ) -> list[list[int]]:
     agent_ids = sorted(tasks_by_agent)
     finish_estimates = estimate_finish_times(warehouse, tasks_by_agent, homes, algorithm, deadline=deadline)
@@ -688,7 +694,8 @@ def build_planning_orders(
             candidate_orders.append(rotate_order(default_order, offset))
             candidate_orders.append(rotate_order(list(reversed(default_order)), offset))
 
-    return unique_orders(candidate_orders)[: planning_order_attempt_limit(len(agent_ids))]
+    limit_agent_count = attempt_limit_agent_count if attempt_limit_agent_count is not None else len(agent_ids)
+    return unique_orders(candidate_orders)[: planning_order_attempt_limit(limit_agent_count)]
 
 
 def prepare_planning_inputs(
@@ -2004,18 +2011,57 @@ def all_window_agents_done(
 def whca_time_limit(
     warehouse: WarehouseMap,
     tasks_by_agent: dict[int, list[Task]],
+    window_size: int,
 ) -> int:
     latest_release = max(
         (task.release_time for agent_tasks in tasks_by_agent.values() for task in agent_tasks),
         default=0,
     )
     task_count = sum(len(agent_tasks) for agent_tasks in tasks_by_agent.values())
-    return latest_release + warehouse.cell_count * WHCA_MAX_TIME_FACTOR + max(1, task_count) * WHCA_WINDOW_SIZE * 4
+    return latest_release + warehouse.cell_count * WHCA_MAX_TIME_FACTOR + max(1, task_count) * window_size * 4
 
 
-def whca_stall_window_limit(warehouse: WarehouseMap) -> int:
-    window_span = max(1, WHCA_WINDOW_SIZE * 2)
+def whca_stall_window_limit(warehouse: WarehouseMap, window_size: int) -> int:
+    window_span = max(1, window_size * 2)
     return max(WHCA_MIN_STALL_WINDOWS, (warehouse.cell_count + window_span - 1) // window_span)
+
+
+def base_whca_window_size(agent_count: int) -> int:
+    if agent_count <= 20:
+        return WHCA_SMALL_WINDOW_SIZE
+    if agent_count <= 40:
+        return WHCA_MEDIUM_WINDOW_SIZE
+    return WHCA_LARGE_WINDOW_SIZE
+
+
+def whca_agent_window_size(
+    warehouse: WarehouseMap,
+    progress: WindowAgentProgress,
+    home: Coord,
+    agent_tasks: list[Task],
+    station_mode: str,
+    base_window_size: int,
+) -> int:
+    current = progress.path[-1]
+    goals: frozenset[Coord] | set[Coord] | None = None
+
+    if progress.returning_to_station:
+        goals = station_goals_for_mode(warehouse, home, station_mode)
+    elif progress.carrying:
+        goals = warehouse.delivery_positions()
+    elif progress.task_index < len(agent_tasks):
+        goals = warehouse.pickup_positions(agent_tasks[progress.task_index].shelf_index)
+
+    if not goals:
+        return base_window_size
+
+    distance = warehouse.distance_to_nearest(current, goals)
+    if distance is None:
+        return base_window_size
+
+    target_window_size = distance + WHCA_TARGET_BUFFER
+    max_window_size = base_window_size * WHCA_MAX_WINDOW_MULTIPLIER
+    return min(max(base_window_size, target_window_size), max_window_size)
 
 
 def whca_progress_signature(progress_by_id: dict[int, WindowAgentProgress]) -> tuple[tuple[int, bool, bool], ...]:
@@ -2215,8 +2261,9 @@ def build_whca_agent_plans_once(
         agent_id: WindowAgentProgress(path=[homes[agent_id]])
         for agent_id in sorted(tasks_by_agent)
     }
-    time_limit = whca_time_limit(warehouse, tasks_by_agent)
-    stall_window_limit = whca_stall_window_limit(warehouse)
+    base_window_size = base_whca_window_size(len(tasks_by_agent))
+    time_limit = whca_time_limit(warehouse, tasks_by_agent, base_window_size)
+    stall_window_limit = whca_stall_window_limit(warehouse, base_window_size)
     stalled_windows = 0
 
     while not all_window_agents_done(progress_by_id, tasks_by_agent):
@@ -2230,7 +2277,15 @@ def build_whca_agent_plans_once(
         signature_before = whca_progress_signature(progress_by_id)
         for agent_id in planning_order:
             progress = progress_by_id[agent_id]
-            current_window_end = len(progress_by_id[agent_id].path) - 1 + WHCA_WINDOW_SIZE
+            window_size = whca_agent_window_size(
+                warehouse,
+                progress,
+                homes[agent_id],
+                tasks_by_agent[agent_id],
+                station_mode,
+                base_window_size,
+            )
+            current_window_end = len(progress_by_id[agent_id].path) - 1 + window_size
             if (
                 not progress.carrying
                 and not progress.returning_to_station
@@ -2255,6 +2310,7 @@ def build_whca_agent_plans_once(
                 algorithm=algorithm,
                 blocked_cells=set(),
                 deadline=deadline,
+                window_size=window_size,
             )
 
         current_time = len(progress_by_id[planning_order[0]].path) - 1 if planning_order else current_time
@@ -2322,6 +2378,7 @@ def build_agent_plans(
         station_mode,
         algorithm,
         deadline=deadline,
+        attempt_limit_agent_count=agent_count,
     )
     use_whca = is_windowed_algorithm(algorithm)
 
@@ -2376,6 +2433,7 @@ def build_agent_plans_from_state(
     stats: PlanningStats | None = None,
     deadline: float | None = None,
     fixed_plans: list[AgentPlan] | None = None,
+    planning_attempt_agent_count: int | None = None,
 ) -> list[AgentPlan]:
     ordering_positions = {agent_id: start_positions[agent_id] for agent_id in tasks_by_agent}
     planning_orders = build_planning_orders(
@@ -2385,6 +2443,7 @@ def build_agent_plans_from_state(
         station_mode,
         algorithm,
         deadline=deadline,
+        attempt_limit_agent_count=planning_attempt_agent_count,
     )
 
     last_error: RuntimeError | None = None
