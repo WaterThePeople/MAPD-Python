@@ -1,13 +1,13 @@
-ID: 123456
+ID: example-small-123456
 Seed: 123456
 
 Size: Small
 Layout: [0]
 Type: [Square, Hexagon, Triangle]
-Mode: [Set,Available]
-Station: [Set,Available]
-Strategy: [FCFS,Robin,GreedyCost]
-Algorithm: [WHCA*,SIPP,BFS]
+Mode: [Set, Available]
+Station: [Set, Available]
+Strategy: [FCFS, Robin, GreedyCost]
+Algorithm: [WHCA*, SIPP, BFS]
 FailureModel: [None, AgentDelay]
 
 Agents: 5
@@ -25,23 +25,23 @@ HotspotTaskShare: 0.70
 WaveZone: Center
 WaveRadius: 12
 
-DeadlineSlack: 0.25
+DeadlineSlack: 2.00
 MaxSimulationTimeSeconds: 600
 
-FailureProbability: 0.01%
+FailureProbability: 0.10%
 FailureDurationMin: 5
 FailureDurationMax: 20
 FailureSeed: 123456
 
 Task Agent Shelf Time Deadline
-1 0 20 0 60
-2 1 100 0 70
-3 2 89 5 80
-4 3 91 5 85
-5 4 29 10 75
-6 0 119 10 90
-7 1 42 15 80
-8 2 72 20 90
-9 3 3 25 85
-10 4 88 30 100
+1 0 20 0 180
+2 1 100 0 190
+3 2 89 5 205
+4 3 91 5 210
+5 4 29 10 215
+6 0 119 10 225
+7 1 42 15 230
+8 2 72 20 240
+9 3 3 25 245
+10 4 88 30 255
 
